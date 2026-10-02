@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prompt Coach</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f5; --card: #ffffff; --fg: #1d1d1b; --muted: #6b6b66; --border: #e3e3df;
+      --quote: #f0f0ec; --accent: #2f6fdb;
+      --good: #1f8a4c; --ok: #b7791f; --bad: #c2412d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161615; --card: #1f1f1d; --fg: #ececea; --muted: #9a9a94; --border: #33332f;
+        --quote: #2a2a27; --accent: #7aa7ff;
+        --good: #4cc27f; --ok: #e0a84a; --bad: #f07a63;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+    header {
+      position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--border);
+      padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline;
+    }
+    header h1 { margin: 0; font-size: 18px; }
+    .stat { color: var(--muted); font-size: 14px; }
+    .stat b { color: var(--fg); font-variant-numeric: tabular-nums; }
+    .live { margin-left: auto; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+    .live.on .dot { background: var(--good); }
+    main { max-width: 820px; margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+    .empty { color: var(--muted); text-align: center; padding: 48px 0; }
+    article { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+    article.new { animation: flash 2s ease-out; }
+    @keyframes flash { from { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); } }
+    .top { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 8px; }
+    time { color: var(--muted); font-size: 13px; }
+    .score { font-weight: 600; font-size: 13px; padding: 2px 9px; border-radius: 999px; color: #fff; font-variant-numeric: tabular-nums; }
+    .s-good { background: var(--good); } .s-ok { background: var(--ok); } .s-bad { background: var(--bad); }
+    .s-none { background: var(--muted); }
+    blockquote { margin: 0 0 12px; padding: 8px 12px; background: var(--quote); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
+    dt { font-weight: 600; color: var(--muted); font-size: 13px; padding-top: 1px; }
+    dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dt.learn, dd.learn { color: var(--accent); }
+    .raw { margin: 0; white-space: pre-wrap; color: var(--muted); }
+    code { font: 13px ui-monospace, monospace; background: var(--quote); padding: 1px 4px; border-radius: 4px; }
+    @media (max-width: 520px) { dl { grid-template-columns: 1fr; } dt { padding-top: 6px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Prompt Coach</h1>
+    <span class="stat"><b id="count">0</b> prompts</span>
+    <span class="stat">avg <b id="avg">–</b> / 5</span>
+    <span class="live" id="live"><span class="dot"></span><span id="live-text">connecting…</span></span>
+  </header>
+  <main id="list"><p class="empty">No reviews yet. Send a prompt in Claude Code and it will appear here.</p></main>
+
+  <script>
+    const list = document.getElementById('list');
+    let seen = null; // keys of entries already shown, so new arrivals can be highlighted
+
+    // Escape first, then apply a tiny subset of markdown (`code`, **bold**, *italic*).
+    function inline(text) {
+      const escaped = text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+      return escaped
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+        .replace(/\*([^*]+)\*/g, '<i>$1</i>');
+    }
+
+    function scoreClass(score) {
+      if (!score) return 's-none';
+      return score >= 4 ? 's-good' : score === 3 ? 's-ok' : 's-bad';
+    }
+
+    function render(entries) {
+      const keys = entries.map((e) => e.time + '|' + e.prompt);
+      document.getElementById('count').textContent = entries.length;
+      const scored = entries.filter((e) => e.score);
+      document.getElementById('avg').textContent = scored.length
+        ? (scored.reduce((sum, e) => sum + e.score, 0) / scored.length).toFixed(1)
+        : '–';
+
+      if (!entries.length) return;
+      list.innerHTML = entries
+        .map((e, i) => ({ e, key: keys[i] }))
+        .reverse()
+        .map(({ e, key }) => `
+          <article class="${seen && !seen.has(key) ? 'new' : ''}">
+            <div class="top">
+              <time>${inline(e.time)}</time>
+              <span class="score ${scoreClass(e.score)}">${e.score ? e.score + '/5' : 'no score'}</span>
+            </div>
+            <blockquote>${inline(e.prompt)}</blockquote>
+            ${e.fields.length
+              ? `<dl>${e.fields.map((f) => {
+                  const cls = f.label === 'Learnings' ? ' class="learn"' : '';
+                  return `<dt${cls}>${inline(f.label)}</dt><dd${cls}>${inline(f.value)}</dd>`;
+                }).join('')}</dl>`
+              : `<p class="raw">${inline(e.review)}</p>`}
+          </article>`)
+        .join('');
+      seen = new Set(keys);
+    }
+
+    function setLive(on) {
+      document.getElementById('live').classList.toggle('on', on);
+      document.getElementById('live-text').textContent = on ? 'live' : 'reconnecting…';
+    }
+
+    // EventSource reconnects by itself if the server restarts.
+    const stream = new EventSource('/api/prompt-feedback/stream');
+    stream.onopen = () => setLive(true);
+    stream.onerror = () => setLive(false);
+    stream.onmessage = (event) => render(JSON.parse(event.data));
+  </script>
+</body>
+</html>

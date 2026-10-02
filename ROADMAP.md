@@ -8,6 +8,7 @@ Tick items off as you go (`- [x]`).
 - [x] 1. Pick a language and scaffold the project — **plain JavaScript (ES modules, Node 24)**, no TypeScript; built-in `node:test` for tests
 - [x] 2. Run `/init` to generate `CLAUDE.md`; add goals, conventions, and "never call real payment APIs"
 - [x] 3. Initialize git; commit often and practise `/code-review` on diffs
+- [x] 3a. (Bonus) Prompt-coach subagent + `UserPromptSubmit` hook, with a live viewer at `/prompt-feedback`
 - [ ] 4. Configure permissions in `.claude/settings.json` (e.g. allow test commands)
 
 ## Phase 1 — Mock backend + MCP server

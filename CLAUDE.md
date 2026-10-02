@@ -18,7 +18,7 @@ Because this is a learning project, explain the Claude Code or Claude API featur
 
 Plain JavaScript (ES modules, Node 24). No TypeScript or type definitions, by choice.
 
-- `npm start`: run `src/index.js`. Loads `.env` if present; copy it from `.env.example`.
+- `npm start`: start the local server at http://127.0.0.1:3000 (set `PORT` to change it). Loads `.env` if present; copy it from `.env.example`.
 - `npm run dev`: same, but restarts when files change (`node --watch`).
 - `npm test`: run all tests with the built-in `node:test` runner (finds `*.test.js` and files under `test/`).
 - Single test file: `node --test path/to/file.test.js`
@@ -42,3 +42,9 @@ Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP clie
 - **Backend + Chat UI**: a minimal chat interface. The backend relays messages to the agent and returns its replies.
 
 Update this section when the real structure differs from the plan.
+
+## Prompt coach (dev tooling, separate from the refund app)
+
+A `UserPromptSubmit` hook (`.claude/hooks/prompt-coach.js`) reviews each user prompt in a detached background `claude -p` run, using the instructions in `.claude/agents/prompt-coach.md`. Reviews are appended to `.claude/prompt-coach/feedback.md` (git-ignored). The hook prints nothing on purpose, because a `UserPromptSubmit` hook's stdout is added to the main session's context.
+
+The server's `/prompt-feedback` page shows the log live. `src/promptFeedback.js` parses the markdown log, so if you change the review format in the agent file, update the parser and its tests too.
