@@ -5,11 +5,12 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
     "dev": "node --watch --env-file-if-exists=.env src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "db:reset": "node src/db/reset.js"
   }
 }
