@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node .claude/hooks/prompt-coach.js" }] }
+    ]
+  }
+}

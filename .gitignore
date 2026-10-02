@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+data/*.db
+.claude/settings.local.json
+.claude/prompt-coach/
