@@ -9,11 +9,11 @@ Tick items off as you go (`- [x]`).
 - [x] 2. Run `/init` to generate `CLAUDE.md`; add goals, conventions, and "never call real payment APIs"
 - [x] 3. Initialize git; commit often and practise `/code-review` on diffs
 - [x] 3a. (Bonus) Prompt-coach subagent + `UserPromptSubmit` hook, with a live viewer at `/prompt-feedback`
-- [ ] 4. Configure permissions in `.claude/settings.json` (e.g. allow test commands)
+- [x] 4. Configure permissions in `.claude/settings.json` (e.g. allow test commands)
 
 ## Phase 1 — Mock backend + MCP server
-- [ ] 5. Mock data layer (SQLite/JSON): customers, orders, payments, refunds — seed edge cases (partial refunds, already-refunded, outside refund window, high-value, flagged accounts)
-- [ ] 6. Plain functions + unit tests: `get_customer`, `get_order`, `get_payment`, `initiate_refund`, `escalate_to_human`
+- [x] 5. Mock data layer (SQLite/JSON): customers, orders, payments, refunds — seed edge cases (partial refunds, already-refunded, outside refund window, high-value, flagged accounts)
+- [x] 6. Plain functions + unit tests: `get_customer`, `get_order`, `get_payment`, `initiate_refund`, `escalate_to_human`
 - [ ] 7. Expose those functions as tools on a local **MCP server** (stdio, `@modelcontextprotocol/sdk`); poke at it with the MCP Inspector
 - [ ] 8. Connect the server to Claude Code with `claude mcp add` and query the mock data from the CLI
 

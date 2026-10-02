@@ -20,6 +20,7 @@ Plain JavaScript (ES modules, Node 24). No TypeScript or type definitions, by ch
 
 - `npm start`: start the local server at http://127.0.0.1:3000 (set `PORT` to change it). Loads `.env` if present; copy it from `.env.example`.
 - `npm run dev`: same, but restarts when files change (`node --watch`).
+- `npm run db:reset`: rebuild `data/refunds.db` from the schema and seed data. Run it after changing either, or to undo refunds made during testing.
 - `npm test`: run all tests with the built-in `node:test` runner (finds `*.test.js` and files under `test/`).
 - Single test file: `node --test path/to/file.test.js`
 - Single test by name: `node --test --test-name-pattern="refund exceeds"`
@@ -32,7 +33,18 @@ No linter or build step yet.
 Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP client)  →  MCP server (tools)  →  Mock DB
 ```
 
-- **Mock DB**: customers, orders, payments, refunds. Seeded with edge cases (partial or already-refunded orders, orders outside the refund window, high-value orders, flagged accounts).
+- **Mock DB** (built): Node's built-in `node:sqlite`, with the tables in `src/db/schema.sql`.
+  - **Tables:** customers, payment_methods (cards on file), orders, payments (one per order), refunds, escalations.
+  - **Money:** integer paise.
+  - **Seed data:** `src/db/seed.js` creates one customer per refund scenario, with dates relative to today. Tests in `test/db.test.js` check the seed data against `src/policy.js`.
+  - **Policy:** `src/policy.js` holds the limits, the refund window and the valid reasons. Keep the rules there, not in the DB or in prompts.
+  - **Tests:** use `openDb(':memory:')` + `applySchema` + `seed` for a fresh DB each time.
+- **Tool functions** (built): `src/tools.js`. `createTools(db, { now })` returns `getCustomer`, `getOrder`, `getPayment`, `initiateRefund` and `escalateToHuman`. All the refund rules are enforced here.
+  - **Stateless:** every call re-verifies identity with `email` + `card_last4`, and only returns the verified customer's own orders.
+  - **Results:** `{ ok: true, ... }` or `{ ok: false, error: '<code>', message }`. Error codes are stable, and tests assert on them.
+  - **Don't leak existence:** an unknown email, a wrong card and someone else's order all get the same reply as a plain miss.
+  - **Approval limit:** applies to an order's running total of refunds (completed + pending), so splitting a refund doesn't bypass it.
+  - **Tests:** `test/tools.test.js`. Pass a fixed `now`, as the window-boundary test does.
 - **MCP server**: exposes the agent's abilities as tools:
   1. Look up users to establish identity and their valid orders
   2. Look up orders for payment details
