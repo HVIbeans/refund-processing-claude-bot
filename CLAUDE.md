@@ -21,6 +21,8 @@ Plain JavaScript (ES modules, Node 24). No TypeScript or type definitions, by ch
 - `npm start`: start the local server at http://127.0.0.1:3000 (set `PORT` to change it). Loads `.env` if present; copy it from `.env.example`.
 - `npm run dev`: same, but restarts when files change (`node --watch`).
 - `npm run db:reset`: rebuild `data/refunds.db` from the schema and seed data. Run it after changing either, or to undo refunds made during testing.
+- `npm run mcp`: run the MCP server over stdio (it waits for a client on stdin).
+- `npm run mcp:inspect`: open the MCP Inspector in the browser, connected to the server.
 - `npm test`: run all tests with the built-in `node:test` runner (finds `*.test.js` and files under `test/`).
 - Single test file: `node --test path/to/file.test.js`
 - Single test by name: `node --test --test-name-pattern="refund exceeds"`
@@ -35,7 +37,7 @@ Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP clie
 
 - **Mock DB** (built): Node's built-in `node:sqlite`, with the tables in `src/db/schema.sql`.
   - **Tables:** customers, payment_methods (cards on file), orders, payments (one per order), refunds, escalations.
-  - **Money:** integer paise.
+  - **Money:** whole rupees (integers), no paise.
   - **Seed data:** `src/db/seed.js` creates one customer per refund scenario, with dates relative to today. Tests in `test/db.test.js` check the seed data against `src/policy.js`.
   - **Policy:** `src/policy.js` holds the limits, the refund window and the valid reasons. Keep the rules there, not in the DB or in prompts.
   - **Tests:** use `openDb(':memory:')` + `applySchema` + `seed` for a fresh DB each time.
@@ -45,11 +47,11 @@ Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP clie
   - **Don't leak existence:** an unknown email, a wrong card and someone else's order all get the same reply as a plain miss.
   - **Approval limit:** applies to an order's running total of refunds (completed + pending), so splitting a refund doesn't bypass it.
   - **Tests:** `test/tools.test.js`. Pass a fixed `now`, as the window-boundary test does.
-- **MCP server**: exposes the agent's abilities as tools:
-  1. Look up users to establish identity and their valid orders
-  2. Look up orders for payment details
-  3. Process refunds for valid reasons
-  4. Escalate to a human: for user-management requests and refunds above the value threshold
+- **MCP server** (built): `src/mcp/server.js` holds `createMcpServer(tools)`, which wraps each function as a tool: `get_customer`, `get_order`, `get_payment`, `initiate_refund`, `escalate_to_human`.
+  - **Schemas:** inputs are zod schemas. Results are JSON text, with `isError: true` when `ok` is false.
+  - **Instructions and descriptions** are sent to the model, so keep them short.
+  - **Entry point:** `src/mcp/stdio.js` runs the server over stdio. It creates and seeds the DB if it's missing. **Never write to stdout in the server**, because stdout carries the protocol; use `console.error`.
+  - **Tests:** `test/mcp.test.js` runs a real `Client` against the server over `InMemoryTransport`.
 - **Agent**: runs the Claude API tool-use loop and calls the MCP server's tools through an MCP client. Holds the refund policy in its system prompt.
 - **Backend + Chat UI**: a minimal chat interface. The backend relays messages to the agent and returns its replies.
 

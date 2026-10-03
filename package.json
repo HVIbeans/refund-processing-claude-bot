@@ -11,6 +11,12 @@
     "start": "node --env-file-if-exists=.env src/index.js",
     "dev": "node --watch --env-file-if-exists=.env src/index.js",
     "test": "node --test",
-    "db:reset": "node src/db/reset.js"
+    "db:reset": "node src/db/reset.js",
+    "mcp": "node src/mcp/stdio.js",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node src/mcp/stdio.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^4.6.5"
   }
 }
