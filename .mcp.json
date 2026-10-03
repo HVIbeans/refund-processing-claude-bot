@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "refund-tools": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "src/mcp/stdio.js"
+      ],
+      "env": {}
+    }
+  }
+}

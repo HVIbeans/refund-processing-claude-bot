@@ -8,19 +8,29 @@
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
-      "Bash(git add:*)"
-    ],
-    "ask": [
-        "Bash(git commit:*)"
+      "Bash(git add:*)",
+      "mcp__refund-tools__get_customer",
+      "mcp__refund-tools__get_order",
+      "mcp__refund-tools__get_payment"
     ],
     "deny": [
       "Read(./.env)",
       "Bash(git push:*)"
+    ],
+    "ask": [
+      "Bash(git commit:*)"
     ]
   },
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "node .claude/hooks/prompt-coach.js" }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/prompt-coach.js"
+          }
+        ]
+      }
     ]
   }
 }

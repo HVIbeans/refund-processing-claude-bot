@@ -52,6 +52,9 @@ Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP clie
   - **Instructions and descriptions** are sent to the model, so keep them short.
   - **Entry point:** `src/mcp/stdio.js` runs the server over stdio. It creates and seeds the DB if it's missing. **Never write to stdout in the server**, because stdout carries the protocol; use `console.error`.
   - **Tests:** `test/mcp.test.js` runs a real `Client` against the server over `InMemoryTransport`.
+  - **In Claude Code:** registered for the project in `.mcp.json` as `refund-tools`, so the tools appear here as `mcp__refund-tools__*` and use the real `data/refunds.db`.
+    - **Permissions:** the three `get_*` tools are allowed in `.claude/settings.json`. `initiate_refund` and `escalate_to_human` ask first (outside auto mode).
+    - **Test refunds** made from Claude Code change the real DB. Undo them with `npm run db:reset`.
 - **Agent**: runs the Claude API tool-use loop and calls the MCP server's tools through an MCP client. Holds the refund policy in its system prompt.
 - **Backend + Chat UI**: a minimal chat interface. The backend relays messages to the agent and returns its replies.
 

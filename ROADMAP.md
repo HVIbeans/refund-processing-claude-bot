@@ -15,7 +15,7 @@ Tick items off as you go (`- [x]`).
 - [x] 5. Mock data layer (SQLite/JSON): customers, orders, payments, refunds — seed edge cases (partial refunds, already-refunded, outside refund window, high-value, flagged accounts)
 - [x] 6. Plain functions + unit tests: `get_customer`, `get_order`, `get_payment`, `initiate_refund`, `escalate_to_human`
 - [x] 7. Expose those functions as tools on a local **MCP server** (stdio, `@modelcontextprotocol/sdk`); poke at it with the MCP Inspector
-- [ ] 8. Connect the server to Claude Code with `claude mcp add` and query the mock data from the CLI
+- [x] 8. Connect the server to Claude Code with `claude mcp add` and query the mock data from the CLI
 
 ## Phase 2 — Claude API agent (hand-built, tools via MCP)
 - [ ] 9. Basic Messages API call with a system prompt containing the refund policy
