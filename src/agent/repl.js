@@ -28,7 +28,36 @@ try {
 
 // The server's instructions go into the system prompt, as MCP clients usually do.
 const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
-const chat = createChat({ client, model, system, tools: mcp.tools, callTool: mcp.callTool, onToolCall: showToolCall });
+const chat = createChat({
+  client, model, system,
+  tools: mcp.tools, callTool: mcp.callTool,
+  onText: write, onToolCall: showToolCall, onDiscard: withdraw,
+});
+
+// Streamed text is written as it arrives. `agent> ` starts each stretch of text: at the start of a
+// turn, and again after tool-call lines.
+let needPrefix = true;
+let midLine = false;
+let turnStart = true;
+function write(text) {
+  if (needPrefix) {
+    output.write(turnStart ? '\nagent> ' : 'agent> ');
+    needPrefix = turnStart = false;
+  }
+  output.write(text);
+  midLine = true;
+}
+function endLine() {
+  if (midLine) output.write('\n');
+  midLine = false;
+}
+// A reply that was already shown was thrown away (refused, cut off or failed): the customer
+// mustn't rely on it. A web UI would delete or grey out the message; a terminal can only say so.
+function withdraw() {
+  endLine();
+  console.log(dim('(that reply was withdrawn)'));
+  needPrefix = true;
+}
 
 console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
@@ -50,12 +79,22 @@ for await (const raw of rl) {
     chat.reset();
     console.log(dim('(conversation cleared)\n'));
   } else if (line) {
+    needPrefix = turnStart = true;
+    midLine = false;
     try {
-      const { text, stopReason, usage, rounds } = await chat.send(line);
+      const { text, fallback, stopReason, usage, rounds } = await chat.send(line);
+      if (fallback) {
+        // Our own reply (refusal, empty or cut-off tool call): it wasn't streamed.
+        endLine();
+        needPrefix = true;
+        write(text);
+      }
+      endLine();
+      if (stopReason === 'max_tokens' && !fallback) console.log(dim('(The reply was cut off.)'));
       const calls = rounds + 1;
-      console.log(`\nagent> ${text}`);
       console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
     } catch (err) {
+      endLine(); // the error may arrive mid-reply
       console.error(`\n${describeError(err)}\n`);
     }
   }
@@ -78,7 +117,11 @@ function showToolCall({ name, input, isError, text }) {
   } catch {
     // not JSON, e.g. an input validation message from the MCP SDK
   }
+  endLine();
+  if (turnStart) output.write('\n');
+  turnStart = false;
   console.log(dim(`  ↳ ${name} ${JSON.stringify(input)} → ${outcome}`));
+  needPrefix = true;
 }
 
 // Lists the tools and what their definitions would add to each request, using the token counting

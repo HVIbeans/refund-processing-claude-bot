@@ -1,4 +1,5 @@
 // A conversation with Claude over the Messages API, with the tool-use loop written by hand.
+// Each API call is streamed, so the caller can show the reply as it's written.
 // The API is stateless: every request sends the system prompt, the tools and the whole history,
 // and we append each reply (and each round of tool results) to that history.
 import { buildSystemPrompt } from "./systemPrompt.js";
@@ -18,6 +19,16 @@ const textOf = (content) =>
     .join("\n")
     .trim();
 
+// Observers (onText, onToolCall, onDiscard) must never break the loop: a tool_use still needs its
+// tool_result, and a tool may already have made a refund that the model has to hear about.
+const notify = (observer, ...args) => {
+  try {
+    observer(...args);
+  } catch {
+    // ignore
+  }
+};
+
 // Adds up the numeric usage fields of every API call in a turn.
 const addUsage = (total, usage = {}) => {
   for (const [key, value] of Object.entries(usage)) {
@@ -34,6 +45,10 @@ export function createChat({
   callTool, // async (name, input) => { text, isError }
   maxRounds = 8, // tool rounds per customer message before the model must answer
   onToolCall = () => {}, // called after each tool runs: ({ name, input, isError, text })
+  onText = () => {}, // called with each piece of streamed text, from every API call in the turn
+  // Called when a reply whose text was already streamed is thrown away (a refusal, a cut-off tool
+  // call or a failed stream), so the caller can withdraw it: the customer mustn't rely on it.
+  onDiscard = () => {},
 }) {
   const history = [];
 
@@ -75,8 +90,12 @@ export function createChat({
     for (;;) {
       const lastRound = rounds >= maxRounds;
       let response;
+      let streamed = false; // has any of this call's text reached onText?
       try {
-        response = await client.messages.create({
+        // Streamed: text pieces go to onText as they arrive, and finalMessage() resolves with the
+        // same complete Message that messages.create() returns (content, stop_reason, usage).
+        // Tool inputs arrive as partial JSON too, but we only run tools from the finished message.
+        const stream = client.messages.stream({
           model,
           max_tokens: maxTokens,
           system,
@@ -85,29 +104,47 @@ export function createChat({
           // Out of rounds: the model must answer in text with what it has.
           ...(tools.length > 0 && lastRound && { tool_choice: { type: "none" } }),
         });
+        // Separate text blocks within one reply get a line break between them, as textOf() does.
+        stream.on("streamEvent", (event) => {
+          if (event.type === "content_block_start" && event.content_block.type === "text" && streamed) {
+            notify(onText, "\n");
+          }
+        });
+        stream.on("text", (delta) => {
+          streamed = true;
+          notify(onText, delta);
+        });
+        response = await stream.finalMessage(); // rejects on an API error or a dropped connection
       } catch (err) {
         rollback(); // so a retry doesn't send the user's text twice
+        if (streamed) notify(onDiscard);
         throw err;
       }
       addUsage(usage, response.usage);
 
       const { stop_reason: stopReason, content } = response;
-      const result = (reply) => ({ text: reply, stopReason, usage, rounds });
+      // fallback: the text is one of our own replies, which was never streamed.
+      const result = (reply, fallback = false) => ({ text: reply, fallback, stopReason, usage, rounds });
+      // Drops this reply from the history, and withdraws whatever of it was already shown.
+      const discard = () => {
+        rollback();
+        if (streamed) notify(onDiscard);
+      };
       if (stopReason === "refusal") {
-        rollback(); // keep the declined turn out of the conversation
-        return result(REFUSAL_REPLY);
+        discard(); // keep the declined turn out of the conversation
+        return result(REFUSAL_REPLY, true);
       }
       if (content.length === 0) {
         // The API rejects an empty assistant turn anywhere but last, so it would break every later request.
         rollback();
-        return result(EMPTY_REPLY);
+        return result(EMPTY_REPLY, true);
       }
       const toolUses = content.filter((b) => b.type === "tool_use");
       if (toolUses.length > 0 && (stopReason === "max_tokens" || lastRound)) {
         // A cut-off tool input may be incomplete, so never run it. (On the last round tool_choice
         // rules tool calls out; this only guards against looping forever.)
-        rollback();
-        return result(CUT_OFF_REPLY);
+        discard();
+        return result(CUT_OFF_REPLY, true);
       }
 
       // Append the full content (not just the text): it can include thinking blocks and tool_use
@@ -124,12 +161,7 @@ export function createChat({
       const results = [];
       for (const { id, name, input } of toolUses) {
         const { text: output, isError } = await runTool(name, input);
-        try {
-          onToolCall({ name, input, isError, text: output });
-        } catch {
-          // A failing observer must not stop the loop: this tool_use still needs its tool_result,
-          // and the tool may already have made a refund that the model has to hear about.
-        }
+        notify(onToolCall, { name, input, isError, text: output });
         results.push({ type: "tool_result", tool_use_id: id, content: output, is_error: isError });
       }
       history.push({ role: "user", content: results });

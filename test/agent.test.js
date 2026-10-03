@@ -4,17 +4,43 @@ import { buildSystemPrompt } from '../src/agent/systemPrompt.js';
 import { createChat } from '../src/agent/chat.js';
 
 // A stand-in for the Anthropic client: records each request and replies from a script.
-// No real API calls in tests.
+// Like the SDK's messages.stream(), it emits each text block as 'text' pieces (split in two, as
+// real deltas would be) before finalMessage() resolves. No real API calls in tests.
 function fakeClient(replies) {
   const requests = [];
   return {
     requests,
     messages: {
-      async create(params) {
+      stream(params) {
         requests.push(structuredClone(params)); // snapshot: the history array keeps changing
         const next = replies.shift();
-        if (next instanceof Error) throw next;
-        return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, ...next };
+        const listeners = { text: [], streamEvent: [] };
+        const emit = (event, value) => listeners[event].forEach((cb) => cb(value));
+        const streamText = (text) => {
+          const half = Math.ceil(text.length / 2);
+          for (const piece of [text.slice(0, half), text.slice(half)]) if (piece) emit('text', piece);
+        };
+        return {
+          on(event, cb) {
+            listeners[event]?.push(cb);
+            return this;
+          },
+          async finalMessage() {
+            if (next instanceof Error) throw next;
+            if (next?.failAfter) {
+              // Some text arrives, then the connection drops.
+              emit('streamEvent', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+              streamText(next.failAfter);
+              throw new Error('stream interrupted');
+            }
+            const message = { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, ...next };
+            message.content.forEach((block, index) => {
+              emit('streamEvent', { type: 'content_block_start', index, content_block: { type: block.type } });
+              if (block.type === 'text') streamText(block.text);
+            });
+            return message;
+          },
+        };
       },
     },
   };
@@ -135,6 +161,73 @@ describe('createChat tool loop', () => {
     assert.equal(order.is_error, true);
     assert.match(order.content, /could not be run: MCP connection closed/);
     assert.deepEqual(seen.map((c) => [c.name, c.isError]), [['initiate_refund', true], ['get_order', true]]);
+  });
+
+  test('streams the text of every API call in the turn, in order', async () => {
+    const preamble = { content: [{ type: 'text', text: 'Let me check.' }, ...use(['a', 'get_order']).content], stop_reason: 'tool_use' };
+    const client = fakeClient([preamble, say('It was delivered.')]);
+    const pieces = [];
+    const result = await createChat({ client, tools: TOOLS, callTool: fakeTools().callTool, onText: (d) => pieces.push(d) })
+      .send('Where is my order?');
+    assert.ok(pieces.length > 2, 'text arrives in pieces');
+    assert.equal(pieces.join(''), 'Let me check.It was delivered.');
+    assert.equal(result.text, 'It was delivered.');
+    assert.equal(result.fallback, false);
+  });
+
+  test('separate text blocks in one reply are streamed with a line break between them', async () => {
+    const reply = { content: [{ type: 'text', text: 'I checked.' }, { type: 'thinking', thinking: '', signature: 's' }, { type: 'text', text: 'All good.' }] };
+    const pieces = [];
+    const result = await createChat({ client: fakeClient([reply]), onText: (d) => pieces.push(d) }).send('Hi');
+    assert.equal(pieces.join(''), 'I checked.\nAll good.');
+    assert.equal(pieces.join(''), result.text);
+  });
+
+  test('our own replies are marked as fallback, because they were never streamed', async () => {
+    const pieces = [];
+    let discarded = 0;
+    const chat = createChat({
+      client: fakeClient([{ content: [], stop_reason: 'refusal' }]),
+      onText: (d) => pieces.push(d), onDiscard: () => discarded++,
+    });
+    const result = await chat.send('something declined');
+    assert.equal(result.fallback, true);
+    assert.deepEqual(pieces, []);
+    assert.equal(discarded, 0, 'nothing was shown, so nothing to withdraw');
+  });
+
+  test('a refusal after some streamed text withdraws that text', async () => {
+    let discarded = 0;
+    const chat = createChat({ client: fakeClient([say('Sure, here is', { stop_reason: 'refusal' })]), onDiscard: () => discarded++ });
+    const result = await chat.send('something declined');
+    assert.equal(result.fallback, true);
+    assert.equal(discarded, 1);
+    assert.equal(chat.history.length, 0);
+  });
+
+  test("a streamed promise before a cut-off tool call is withdrawn, and the tool isn't run", async () => {
+    const promise = { content: [{ type: 'text', text: "I'll refund ₹4,000 now." }, ...use(['a', 'initiate_refund']).content], stop_reason: 'max_tokens' };
+    const tools = fakeTools();
+    let discarded = 0;
+    const chat = createChat({ client: fakeClient([promise]), tools: TOOLS, callTool: tools.callTool, onDiscard: () => discarded++ });
+    const result = await chat.send('Refund please');
+    assert.equal(discarded, 1);
+    assert.equal(result.fallback, true);
+    assert.equal(tools.calls.length, 0);
+  });
+
+  test('a stream that fails partway withdraws its text and rolls back', async () => {
+    let discarded = 0;
+    const chat = createChat({ client: fakeClient([{ failAfter: 'Your refund is' }]), onDiscard: () => discarded++ });
+    await assert.rejects(chat.send('Refund please'), /stream interrupted/);
+    assert.equal(discarded, 1);
+    assert.equal(chat.history.length, 0);
+  });
+
+  test('a throwing onText still finishes the turn', async () => {
+    const chat = createChat({ client: fakeClient([say('Hello!')]), onText: () => { throw new Error('terminal gone'); } });
+    assert.equal((await chat.send('Hi')).text, 'Hello!');
+    assert.equal(chat.history.length, 2);
   });
 
   test('a throwing onToolCall still sends every tool result', async () => {
