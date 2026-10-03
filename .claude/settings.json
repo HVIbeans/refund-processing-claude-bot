@@ -1,4 +1,23 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "Bash(npm start:*)",
+      "Bash(node --test:*)",
+      "Bash(node --check:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)"
+    ],
+    "ask": [
+        "Bash(git commit:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Bash(git push:*)"
+    ]
+  },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "node .claude/hooks/prompt-coach.js" }] }
