@@ -14,7 +14,7 @@ function fakeClient(replies) {
       stream(params) {
         requests.push(structuredClone(params)); // snapshot: the history array keeps changing
         const next = replies.shift();
-        const listeners = { text: [], streamEvent: [] };
+        const listeners = { text: [], thinking: [], streamEvent: [] };
         const emit = (event, value) => listeners[event].forEach((cb) => cb(value));
         const streamText = (text) => {
           const half = Math.ceil(text.length / 2);
@@ -37,6 +37,7 @@ function fakeClient(replies) {
             message.content.forEach((block, index) => {
               emit('streamEvent', { type: 'content_block_start', index, content_block: { type: block.type } });
               if (block.type === 'text') streamText(block.text);
+              if (block.type === 'thinking' && block.thinking) emit('thinking', block.thinking);
             });
             return message;
           },
@@ -97,6 +98,86 @@ describe('buildSystemPrompt', () => {
     assert.match(prompt, /Tool notes:\nVerify the customer first\.$/);
     assert.match(prompt, /Use your tools to verify the customer/);
     assert.doesNotMatch(prompt, /cannot look up/);
+  });
+});
+
+describe('createChat thinking and effort', () => {
+  const think = (thinking, text) => ({
+    content: [{ type: 'thinking', thinking, signature: 'sig' }, { type: 'text', text }],
+  });
+
+  test('asks for adaptive thinking by default, with effort only when set', async () => {
+    const client = fakeClient([say('a'), say('b')]);
+    await createChat({ client }).send('Hi');
+    await createChat({ client, effort: 'low' }).send('Hi');
+    assert.deepEqual(client.requests[0].thinking, { type: 'adaptive' });
+    assert.equal('output_config' in client.requests[0], false);
+    assert.deepEqual(client.requests[1].output_config, { effort: 'low' });
+  });
+
+  test('thinking: false sends no thinking setting', async () => {
+    const client = fakeClient([say('a')]);
+    await createChat({ client, thinking: false }).send('Hi');
+    assert.equal('thinking' in client.requests[0], false);
+  });
+
+  test('setEffort and setThinking change the next request and keep the history', async () => {
+    const client = fakeClient([say('a'), say('b')]);
+    const chat = createChat({ client, effort: 'medium' });
+    await chat.send('Hi');
+    chat.setEffort('high');
+    chat.setThinking(false);
+    await chat.send('Again');
+    assert.deepEqual(client.requests[0].output_config, { effort: 'medium' });
+    assert.deepEqual(client.requests[1].output_config, { effort: 'high' });
+    assert.equal('thinking' in client.requests[1], false);
+    assert.equal(client.requests[1].messages.length, 3);
+  });
+
+  test('streams thinking and text to separate callbacks', async () => {
+    const thoughts = [];
+    const pieces = [];
+    const result = await createChat({
+      client: fakeClient([think('Partly refunded already; check what is left.', 'You can get ₹4,000 back.')]),
+      onThinking: (d) => thoughts.push(d), onText: (d) => pieces.push(d),
+    }).send('Refund my shoes');
+    assert.equal(thoughts.join(''), 'Partly refunded already; check what is left.');
+    assert.equal(pieces.join(''), 'You can get ₹4,000 back.');
+    assert.equal(result.text, 'You can get ₹4,000 back.');
+  });
+
+  test('the thinking before a tool call is sent back unchanged with the tool round', async () => {
+    const thinkingBlock = { type: 'thinking', thinking: 'Verify first.', signature: 'sig-123' };
+    const first = { content: [thinkingBlock, ...use(['t1', 'get_customer']).content], stop_reason: 'tool_use' };
+    const client = fakeClient([first, say('Verified.')]);
+    await createChat({ client, tools: TOOLS, callTool: fakeTools().callTool }).send('Hi');
+    const assistant = client.requests[1].messages[1];
+    assert.equal(assistant.role, 'assistant');
+    assert.deepEqual(assistant.content[0], thinkingBlock);
+    assert.equal(assistant.content[1].type, 'tool_use');
+  });
+
+  test('a reply cut off mid-thinking is rolled back, not kept with an unsigned block', async () => {
+    let discarded = 0;
+    const cutOff = { content: [{ type: 'thinking', thinking: 'Let me weigh the window and', signature: '' }], stop_reason: 'max_tokens' };
+    const client = fakeClient([say('Hello!'), cutOff, say('Sure.')]);
+    const chat = createChat({ client, onDiscard: () => discarded++ });
+    await chat.send('Hi');
+    const result = await chat.send('Is ORD-5003 refundable?');
+    assert.equal(result.fallback, true);
+    assert.match(result.text, /cut off/);
+    assert.equal(discarded, 1);
+    assert.equal(chat.history.length, 2);
+    await chat.send('Again?');
+    assert.ok(client.requests[2].messages.every((m) => !Array.isArray(m.content) || m.content.every((b) => b.type !== 'thinking' || b.signature)));
+  });
+
+  test('a refusal after streamed thinking withdraws it', async () => {
+    let discarded = 0;
+    const refused = { content: [{ type: 'thinking', thinking: 'Hmm.', signature: 's' }], stop_reason: 'refusal' };
+    const result = await createChat({ client: fakeClient([refused]), onDiscard: () => discarded++ }).send('x');
+    assert.equal(result.fallback, true);
+    assert.equal(discarded, 1);
   });
 });
 

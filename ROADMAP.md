@@ -22,7 +22,7 @@ Tick items off as you go (`- [x]`).
 - [x] 10. **MCP client** in the agent: connect to the server, list its tools, convert them to Claude tool definitions
 - [x] 11. Write the agent loop yourself (`tool_use` → call the MCP tool → `tool_result` → repeat until `end_turn`)
 - [x] 12. Streaming responses
-- [ ] 13. Extended thinking for policy edge cases
+- [x] 13. Extended thinking for policy edge cases
 - [ ] 14. Structured outputs for the final decision (`{decision, amount, reason, needs_human}`)
 - [ ] 15. Prompt caching on system prompt / policy / tools; measure savings via `usage` and token counting
 - [ ] 16. Replace the manual loop with the SDK's Tool Runner and compare

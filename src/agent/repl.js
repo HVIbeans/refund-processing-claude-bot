@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import Anthropic from '@anthropic-ai/sdk';
 import { DEFAULT_MODEL, createChat } from './chat.js';
 import { connectMcp, stdioTransport } from './mcpClient.js';
+import { modelSupport } from './capabilities.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { POLICY } from '../policy.js';
 
@@ -14,6 +15,12 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+const EFFORTS = ['low', 'medium', 'high'];
+const effort = process.env.ANTHROPIC_EFFORT || 'medium';
+if (!EFFORTS.includes(effort)) {
+  console.error(`ANTHROPIC_EFFORT must be one of ${EFFORTS.join(', ')} (got "${effort}").`);
+  process.exit(1);
+}
 const client = new Anthropic();
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 
@@ -26,43 +33,70 @@ try {
   process.exit(1);
 }
 
+// Only ask for thinking and effort if the model accepts them; otherwise every request would 400.
+const support = await modelSupport(client, model);
+const supportsEffort = (level) => support.effortLevels.includes(level);
+
+// Only controls what's printed: hidden thinking is still generated, kept in the history and billed.
+let showThinking = true;
+
 // The server's instructions go into the system prompt, as MCP clients usually do.
 const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
 const chat = createChat({
   client, model, system,
+  thinking: support.adaptiveThinking,
+  effort: supportsEffort(effort) ? effort : undefined,
   tools: mcp.tools, callTool: mcp.callTool,
-  onText: write, onToolCall: showToolCall, onDiscard: withdraw,
+  onText: (text) => emit('agent', text),
+  onThinking: (text) => {
+    if (showThinking) emit('thinking', text);
+  },
+  onToolCall: showToolCall, onDiscard: withdraw,
 });
 
-// Streamed text is written as it arrives. `agent> ` starts each stretch of text: at the start of a
-// turn, and again after tool-call lines.
-let needPrefix = true;
-let midLine = false;
+// Streamed text is written as it arrives. Each stretch starts with its prefix, `thinking> ` (dim)
+// or `agent> `, so thinking, tool-call lines and the reply stay on separate lines.
+let current = null; // the kind of stretch being written, or null at the start of a line
 let turnStart = true;
-function write(text) {
-  if (needPrefix) {
-    output.write(turnStart ? '\nagent> ' : 'agent> ');
-    needPrefix = turnStart = false;
+let shown = false; // has the current API call printed anything (that a discard would withdraw)?
+function emit(kind, text) {
+  shown = true;
+  if (current !== kind) {
+    endLine();
+    startBlock();
+    output.write(kind === 'thinking' ? dim('thinking> ') : 'agent> ');
+    current = kind;
   }
-  output.write(text);
-  midLine = true;
+  output.write(kind === 'thinking' ? dim(text) : text);
+}
+function startBlock() {
+  if (turnStart) output.write('\n'); // a blank line between "you> " and the turn's output
+  turnStart = false;
 }
 function endLine() {
-  if (midLine) output.write('\n');
-  midLine = false;
+  if (current) output.write('\n');
+  current = null;
 }
 // A reply that was already shown was thrown away (refused, cut off or failed): the customer
 // mustn't rely on it. A web UI would delete or grey out the message; a terminal can only say so.
+// Nothing is printed if that reply never reached the screen (e.g. its thinking was hidden).
 function withdraw() {
+  if (!shown) return;
+  shown = false;
   endLine();
   console.log(dim('(that reply was withdrawn)'));
-  needPrefix = true;
 }
+const thinkingLabel = () => {
+  if (!support.adaptiveThinking) return `off (${model} doesn't support adaptive thinking)`;
+  return chat.settings.thinking ? `adaptive${showThinking ? '' : ' (hidden)'}` : 'off';
+};
+const effortLabel = () => chat.settings.effort ?? (support.effortLevels.length ? 'model default' : 'not supported');
 
 console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
+console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} ${dim(`(capabilities from the ${support.source})`)}`);
 console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));
-console.log(dim("Type a message. /tools lists the agent's tools, /reset starts over, /exit quits.\n"));
+console.log(dim('Commands: /tools, /effort [low|medium|high], /thinking (show/hide), /thinking on|off, /reset, /exit.\n'));
 
 const rl = readline.createInterface({ input, output, prompt: 'you> ' });
 let closed = false;
@@ -72,26 +106,46 @@ rl.prompt();
 // Lines are read one at a time; the next prompt appears only after the reply. Ctrl+D ends input.
 for await (const raw of rl) {
   const line = raw.trim();
+  const [command, arg] = line.split(/\s+/);
   if (line === '/exit') break;
   if (line === '/tools') {
     await showTools();
+  } else if (command === '/effort') {
+    if (arg && !EFFORTS.includes(arg)) {
+      console.log(dim(`(effort must be one of ${EFFORTS.join(', ')})\n`));
+    } else if (arg && !supportsEffort(arg)) {
+      console.log(dim(`(${model} doesn't support effort ${arg})\n`));
+    } else {
+      if (arg) chat.setEffort(arg);
+      console.log(dim(`(effort: ${effortLabel()})\n`));
+    }
+  } else if (command === '/thinking') {
+    if (arg === 'on' || arg === 'off') {
+      // What the API is asked for. If the model can't think, it stays off and the label says why.
+      if (arg === 'off' || support.adaptiveThinking) chat.setThinking(arg === 'on');
+    } else if (arg) {
+      console.log(dim('(use /thinking, /thinking on or /thinking off)'));
+    }
+    else showThinking = !showThinking; // only what's printed
+    console.log(dim(`(thinking: ${thinkingLabel()})\n`));
   } else if (line === '/reset') {
     chat.reset();
     console.log(dim('(conversation cleared)\n'));
   } else if (line) {
-    needPrefix = turnStart = true;
-    midLine = false;
+    current = null;
+    turnStart = true;
+    shown = false;
     try {
       const { text, fallback, stopReason, usage, rounds } = await chat.send(line);
       if (fallback) {
         // Our own reply (refusal, empty or cut-off tool call): it wasn't streamed.
         endLine();
-        needPrefix = true;
-        write(text);
+        emit('agent', text);
       }
       endLine();
       if (stopReason === 'max_tokens' && !fallback) console.log(dim('(The reply was cut off.)'));
       const calls = rounds + 1;
+      // Output tokens include the thinking, so they rise with effort.
       console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
     } catch (err) {
       endLine(); // the error may arrive mid-reply
@@ -118,10 +172,9 @@ function showToolCall({ name, input, isError, text }) {
     // not JSON, e.g. an input validation message from the MCP SDK
   }
   endLine();
-  if (turnStart) output.write('\n');
-  turnStart = false;
+  startBlock();
   console.log(dim(`  ↳ ${name} ${JSON.stringify(input)} → ${outcome}`));
-  needPrefix = true;
+  shown = false; // that call's output is kept; a later discard only concerns the next call
 }
 
 // Lists the tools and what their definitions would add to each request, using the token counting

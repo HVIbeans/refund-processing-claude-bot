@@ -40,17 +40,25 @@ export function createChat({
   client,
   model = DEFAULT_MODEL,
   system = buildSystemPrompt(),
-  maxTokens = 5000,
+  // Thinking counts against max_tokens (and is billed as output), so this leaves room for it.
+  maxTokens = 16000,
+  // Adaptive thinking: Claude decides when and how much to think, including between tool calls
+  // (interleaved thinking). On Sonnet 4.6, leaving `thinking` out means no thinking at all.
+  thinking = true,
+  effort, // "low" | "medium" | "high"; unset uses the model's default (high on Sonnet 4.6)
   tools = [], // Claude tool definitions (from mcpClient.js)
   callTool, // async (name, input) => { text, isError }
   maxRounds = 8, // tool rounds per customer message before the model must answer
   onToolCall = () => {}, // called after each tool runs: ({ name, input, isError, text })
   onText = () => {}, // called with each piece of streamed text, from every API call in the turn
-  // Called when a reply whose text was already streamed is thrown away (a refusal, a cut-off tool
+  onThinking = () => {}, // called with each piece of streamed thinking (a summary on Sonnet 4.6)
+  // Called when a reply whose text or thinking was already streamed is thrown away (a refusal, a cut-off tool
   // call or a failed stream), so the caller can withdraw it: the customer mustn't rely on it.
   onDiscard = () => {},
 }) {
   const history = [];
+  // Read on every request, so they can change mid-conversation without losing the history.
+  const settings = { thinking, effort };
 
   // A message that ends in tool results is a user message, so new text joins it (results first,
   // then text). Starting a new user message instead would break the user/assistant alternation.
@@ -90,7 +98,8 @@ export function createChat({
     for (;;) {
       const lastRound = rounds >= maxRounds;
       let response;
-      let streamed = false; // has any of this call's text reached onText?
+      let streamed = false; // has any of this call's text or thinking been shown?
+      let textStreamed = false;
       try {
         // Streamed: text pieces go to onText as they arrive, and finalMessage() resolves with the
         // same complete Message that messages.create() returns (content, stop_reason, usage).
@@ -103,16 +112,23 @@ export function createChat({
           ...(tools.length > 0 && { tools }),
           // Out of rounds: the model must answer in text with what it has.
           ...(tools.length > 0 && lastRound && { tool_choice: { type: "none" } }),
+          // Both are generally available on Sonnet 4.6: no beta headers needed.
+          ...(settings.thinking && { thinking: { type: "adaptive" } }),
+          ...(settings.effort && { output_config: { effort: settings.effort } }),
         });
         // Separate text blocks within one reply get a line break between them, as textOf() does.
         stream.on("streamEvent", (event) => {
-          if (event.type === "content_block_start" && event.content_block.type === "text" && streamed) {
+          if (event.type === "content_block_start" && event.content_block.type === "text" && textStreamed) {
             notify(onText, "\n");
           }
         });
         stream.on("text", (delta) => {
-          streamed = true;
+          streamed = textStreamed = true;
           notify(onText, delta);
+        });
+        stream.on("thinking", (delta) => {
+          streamed = true;
+          notify(onThinking, delta);
         });
         response = await stream.finalMessage(); // rejects on an API error or a dropped connection
       } catch (err) {
@@ -146,6 +162,12 @@ export function createChat({
         discard();
         return result(CUT_OFF_REPLY, true);
       }
+      if (stopReason === "max_tokens" && content.at(-1).type === "thinking") {
+        // Cut off mid-thinking: the block never got its signature (it arrives as the block ends),
+        // and sending an unsigned thinking block back would fail every later request.
+        discard();
+        return result(CUT_OFF_REPLY, true);
+      }
 
       // Append the full content (not just the text): it can include thinking blocks and tool_use
       // blocks, which must be passed back unchanged on later requests.
@@ -172,6 +194,13 @@ export function createChat({
 
   return {
     send,
+    setEffort: (level) => {
+      settings.effort = level;
+    },
+    setThinking: (on) => {
+      settings.thinking = on;
+    },
+    settings,
     reset: () => {
       history.length = 0;
     },
