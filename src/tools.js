@@ -214,7 +214,7 @@ export function createTools(db, { now = () => new Date() } = {}) {
     };
   }
 
-  // amount is in paise. idempotency_key: retrying with the same key returns the original refund
+  // amount is whole rupees. idempotency_key: retrying with the same key returns the original refund
   // instead of refunding twice.
   function initiateRefund({ email, card_last4, order_id, amount, reason, reason_details, idempotency_key } = {}) {
     const customer = verify(email, card_last4);
@@ -236,7 +236,7 @@ export function createTools(db, { now = () => new Date() } = {}) {
     }
 
     if (!Number.isInteger(amount) || amount <= 0) {
-      return fail('invalid_amount', 'amount must be a positive whole number of paise (₹1 = 100 paise).');
+      return fail('invalid_amount', 'amount must be a positive whole number of rupees.');
     }
     if (!POLICY.validReasons.includes(reason)) {
       return fail('invalid_reason', `reason must be one of: ${POLICY.validReasons.join(', ')}. Other reasons (such as a change of mind) are not refundable.`);

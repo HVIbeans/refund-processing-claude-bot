@@ -2,7 +2,6 @@
 // Dates are relative to `today` so the refund-window cases stay correct whenever the DB is reset.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const rupees = (n) => n * 100; // amounts are stored in paise
 
 export function seed(db, today = new Date()) {
   const daysAgo = (n) => new Date(today.getTime() - n * DAY_MS).toISOString();
@@ -36,32 +35,32 @@ export function seed(db, today = new Date()) {
   // payment: payment_method_id, status
   const orders = [
     // Priya: happy path, above the standard limit, and outside the 30-day window
-    [['ORD-5001', 'CUS-1001', 'Wireless earbuds', 'delivered', daysAgo(8), daysAgo(5), rupees(3_499)], ['PM-201', 'captured']],
-    [['ORD-5002', 'CUS-1001', 'Smartwatch', 'delivered', daysAgo(14), daysAgo(10), rupees(12_999)], ['PM-201', 'captured']],
-    [['ORD-5003', 'CUS-1001', 'Phone case + screen guard', 'delivered', daysAgo(50), daysAgo(45), rupees(2_199)], ['PM-201', 'captured']],
+    [['ORD-5001', 'CUS-1001', 'Wireless earbuds', 'delivered', daysAgo(8), daysAgo(5), 3_499], ['PM-201', 'captured']],
+    [['ORD-5002', 'CUS-1001', 'Smartwatch', 'delivered', daysAgo(14), daysAgo(10), 12_999], ['PM-201', 'captured']],
+    [['ORD-5003', 'CUS-1001', 'Phone case + screen guard', 'delivered', daysAgo(50), daysAgo(45), 2_199], ['PM-201', 'captured']],
     // Arjun (VIP): within the VIP limit, then above even the VIP limit
-    [['ORD-5004', 'CUS-1002', 'Espresso machine', 'delivered', daysAgo(6), daysAgo(3), rupees(18_500)], ['PM-202', 'captured']],
-    [['ORD-5005', 'CUS-1002', '4K television', 'delivered', daysAgo(12), daysAgo(7), rupees(42_000)], ['PM-202', 'captured']],
+    [['ORD-5004', 'CUS-1002', 'Espresso machine', 'delivered', daysAgo(6), daysAgo(3), 18_500], ['PM-202', 'captured']],
+    [['ORD-5005', 'CUS-1002', '4K television', 'delivered', daysAgo(12), daysAgo(7), 42_000], ['PM-202', 'captured']],
     // Neha: partially refunded, and fully refunded (duplicate attempt)
-    [['ORD-5006', 'CUS-1003', 'Running shoes x2', 'delivered', daysAgo(15), daysAgo(12), rupees(8_000)], ['PM-203', 'captured']],
-    [['ORD-5007', 'CUS-1003', 'Yoga mat', 'delivered', daysAgo(20), daysAgo(17), rupees(2_499)], ['PM-204', 'captured']],
+    [['ORD-5006', 'CUS-1003', 'Running shoes x2', 'delivered', daysAgo(15), daysAgo(12), 8_000], ['PM-203', 'captured']],
+    [['ORD-5007', 'CUS-1003', 'Yoga mat', 'delivered', daysAgo(20), daysAgo(17), 2_499], ['PM-204', 'captured']],
     // Rahul (flagged) and Sana (suspended)
-    [['ORD-5008', 'CUS-1004', 'Bluetooth speaker', 'delivered', daysAgo(11), daysAgo(8), rupees(6_000)], ['PM-205', 'captured']],
-    [['ORD-5009', 'CUS-1005', 'Desk lamp', 'delivered', daysAgo(9), daysAgo(6), rupees(1_500)], ['PM-206', 'captured']],
+    [['ORD-5008', 'CUS-1004', 'Bluetooth speaker', 'delivered', daysAgo(11), daysAgo(8), 6_000], ['PM-205', 'captured']],
+    [['ORD-5009', 'CUS-1005', 'Desk lamp', 'delivered', daysAgo(9), daysAgo(6), 1_500], ['PM-206', 'captured']],
     // Vikram: not delivered, pending payment, failed payment, disputed payment
-    [['ORD-5010', 'CUS-1006', 'Backpack', 'shipped', daysAgo(4), null, rupees(5_600)], ['PM-207', 'captured']],
-    [['ORD-5011', 'CUS-1006', 'Water bottle', 'placed', daysAgo(1), null, rupees(1_999)], ['PM-207', 'pending']],
-    [['ORD-5012', 'CUS-1006', 'Keyboard', 'cancelled', daysAgo(3), null, rupees(3_200)], ['PM-207', 'failed']],
-    [['ORD-5013', 'CUS-1006', 'Gaming mouse', 'delivered', daysAgo(18), daysAgo(15), rupees(4_200)], ['PM-207', 'disputed']],
+    [['ORD-5010', 'CUS-1006', 'Backpack', 'shipped', daysAgo(4), null, 5_600], ['PM-207', 'captured']],
+    [['ORD-5011', 'CUS-1006', 'Water bottle', 'placed', daysAgo(1), null, 1_999], ['PM-207', 'pending']],
+    [['ORD-5012', 'CUS-1006', 'Keyboard', 'cancelled', daysAgo(3), null, 3_200], ['PM-207', 'failed']],
+    [['ORD-5013', 'CUS-1006', 'Gaming mouse', 'delivered', daysAgo(18), daysAgo(15), 4_200], ['PM-207', 'disputed']],
     // Anita: a refund already waiting for approval
-    [['ORD-5014', 'CUS-1007', 'Office chair', 'delivered', daysAgo(10), daysAgo(6), rupees(9_000)], ['PM-208', 'captured']],
+    [['ORD-5014', 'CUS-1007', 'Office chair', 'delivered', daysAgo(10), daysAgo(6), 9_000], ['PM-208', 'captured']],
   ];
 
   const refunds = [
     // id, payment_id, amount, reason, reason_details, status, idempotency_key, requested_at, resolved_at, resolved_by
-    ['REF-301', 'PAY-9006', rupees(3_000), 'damaged', 'One shoe split at the sole', 'completed', 'seed-ref-301', daysAgo(10), daysAgo(10), 'agent'],
-    ['REF-302', 'PAY-9007', rupees(2_499), 'not_as_described', 'Much thinner than the listing said', 'completed', 'seed-ref-302', daysAgo(15), daysAgo(15), 'agent'],
-    ['REF-303', 'PAY-9014', rupees(7_000), 'damaged', 'Armrest snapped off on day one', 'pending_approval', 'seed-ref-303', daysAgo(2), null, null],
+    ['REF-301', 'PAY-9006', 3_000, 'damaged', 'One shoe split at the sole', 'completed', 'seed-ref-301', daysAgo(10), daysAgo(10), 'agent'],
+    ['REF-302', 'PAY-9007', 2_499, 'not_as_described', 'Much thinner than the listing said', 'completed', 'seed-ref-302', daysAgo(15), daysAgo(15), 'agent'],
+    ['REF-303', 'PAY-9014', 7_000, 'damaged', 'Armrest snapped off on day one', 'pending_approval', 'seed-ref-303', daysAgo(2), null, null],
   ];
 
   const escalations = [

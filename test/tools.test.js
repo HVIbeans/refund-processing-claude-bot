@@ -38,7 +38,7 @@ describe('getCustomer', () => {
     assert.deepEqual(result.customer, { id: 'CUS-1001', name: 'Priya Shah', email: 'priya.shah@example.com', status: 'active', tier: 'standard' });
     assert.deepEqual(result.cards, [{ brand: 'visa', last4: '4242' }]);
     assert.deepEqual(result.orders.map((o) => o.id), ['ORD-5001', 'ORD-5002', 'ORD-5003']); // newest first
-    assert.equal(result.orders[0].total_display, '₹3,499.00');
+    assert.equal(result.orders[0].total_display, '₹3,499');
   });
 
   test('ignores email case and surrounding whitespace', () => {
@@ -92,12 +92,12 @@ describe('getPayment', () => {
     assert.deepEqual(result.payment.card, { brand: 'rupay', last4: '6070' });
     assert.deepEqual(result.refunds.map((r) => [r.id, r.status]), [['REF-301', 'completed']]);
     assert.equal(result.refund_eligibility.eligible, true);
-    assert.equal(result.refund_eligibility.refundable_amount, 500_000);
+    assert.equal(result.refund_eligibility.refundable_amount, 5_000);
   });
 
   test('counts a refund waiting for approval against what is left', () => {
     const { refund_eligibility } = tools.getPayment({ ...anita, order_id: 'ORD-5014' });
-    assert.equal(refund_eligibility.refundable_amount, 200_000);
+    assert.equal(refund_eligibility.refundable_amount, 2_000);
   });
 
   test('explains why each seeded edge case is not refundable', () => {
@@ -122,7 +122,7 @@ describe('getPayment', () => {
 
 describe('initiateRefund', () => {
   test('completes a refund within the limit and sends it back to the original card', () => {
-    const result = refund(priya, 'ORD-5001', 349_900);
+    const result = refund(priya, 'ORD-5001', 3_499);
     assert.equal(result.ok, true);
     assert.equal(result.refund.status, 'completed');
     assert.deepEqual(result.refund.refund_to, { brand: 'visa', last4: '4242' });
@@ -132,7 +132,7 @@ describe('initiateRefund', () => {
   });
 
   test('records a refund above the limit as pending approval and escalates it', () => {
-    const result = refund(priya, 'ORD-5002', 1_299_900);
+    const result = refund(priya, 'ORD-5002', 12_999);
     assert.equal(result.refund.status, 'pending_approval');
     assert.equal(result.refund.resolved_at, null);
     const esc = db.prepare('SELECT type, customer_id, order_id, refund_id, status FROM escalations WHERE id = ?').get(result.escalation_id);
@@ -140,24 +140,24 @@ describe('initiateRefund', () => {
   });
 
   test('uses the higher limit for VIP customers', () => {
-    assert.equal(refund(arjun, 'ORD-5004', 1_850_000).refund.status, 'completed');
-    assert.equal(refund(arjun, 'ORD-5005', 4_200_000).refund.status, 'pending_approval');
+    assert.equal(refund(arjun, 'ORD-5004', 18_500).refund.status, 'completed');
+    assert.equal(refund(arjun, 'ORD-5005', 42_000).refund.status, 'pending_approval');
   });
 
   test('allows a partial refund up to what is left, and no more', () => {
-    const tooMuch = refund(neha, 'ORD-5006', 500_001);
+    const tooMuch = refund(neha, 'ORD-5006', 5_001);
     assert.equal(tooMuch.error, 'exceeds_refundable_amount');
-    assert.equal(tooMuch.refundable_amount, 500_000);
-    assert.equal(refund(neha, 'ORD-5006', 200_000).refund.status, 'completed'); // ₹3,000 + ₹2,000 = ₹5,000, at the limit
+    assert.equal(tooMuch.refundable_amount, 5_000);
+    assert.equal(refund(neha, 'ORD-5006', 2_000).refund.status, 'completed'); // ₹3,000 + ₹2,000 = ₹5,000, at the limit
   });
 
   test('applies the limit to the running total, so splitting a refund does not avoid approval', () => {
     // ₹3,000 already refunded + ₹2,500 = ₹5,500, above the ₹5,000 standard limit.
-    assert.equal(refund(neha, 'ORD-5006', 250_000).refund.status, 'pending_approval');
+    assert.equal(refund(neha, 'ORD-5006', 2_500).refund.status, 'pending_approval');
   });
 
   test('a retry with the same idempotency key returns the original refund instead of refunding twice', () => {
-    const args = { ...priya, order_id: 'ORD-5001', amount: 100_000, reason: 'damaged', idempotency_key: 'retry-me' };
+    const args = { ...priya, order_id: 'ORD-5001', amount: 1_000, reason: 'damaged', idempotency_key: 'retry-me' };
     const first = tools.initiateRefund(args);
     const second = tools.initiateRefund(args);
     assert.equal(first.replayed, false);
@@ -167,31 +167,31 @@ describe('initiateRefund', () => {
   });
 
   test('rejects an idempotency key reused for a different request, including another customer\'s', () => {
-    refund(priya, 'ORD-5001', 100_000, { idempotency_key: 'k1' });
-    assert.equal(refund(priya, 'ORD-5001', 200_000, { idempotency_key: 'k1' }).error, 'idempotency_key_reused');
-    assert.equal(refund(priya, 'ORD-5001', 100_000, { idempotency_key: 'seed-ref-301' }).error, 'idempotency_key_reused');
-    assert.equal(refund(priya, 'ORD-5001', 100_000, { idempotency_key: '  ' }).error, 'invalid_idempotency_key');
+    refund(priya, 'ORD-5001', 1_000, { idempotency_key: 'k1' });
+    assert.equal(refund(priya, 'ORD-5001', 2_000, { idempotency_key: 'k1' }).error, 'idempotency_key_reused');
+    assert.equal(refund(priya, 'ORD-5001', 1_000, { idempotency_key: 'seed-ref-301' }).error, 'idempotency_key_reused');
+    assert.equal(refund(priya, 'ORD-5001', 1_000, { idempotency_key: '  ' }).error, 'invalid_idempotency_key');
   });
 
   test('rejects invalid amounts and reasons', () => {
     for (const amount of [0, -100, 1.5, '100', undefined]) {
       assert.equal(refund(priya, 'ORD-5001', amount).error, 'invalid_amount', String(amount));
     }
-    assert.equal(refund(priya, 'ORD-5001', 100_000, { reason: 'changed_mind' }).error, 'invalid_reason');
-    assert.equal(refund(priya, 'ORD-5001', 100_000, { reason_details: 'x'.repeat(2001) }).error, 'invalid_reason_details');
+    assert.equal(refund(priya, 'ORD-5001', 1_000, { reason: 'changed_mind' }).error, 'invalid_reason');
+    assert.equal(refund(priya, 'ORD-5001', 1_000, { reason_details: 'x'.repeat(2001) }).error, 'invalid_reason_details');
   });
 
   test('refuses every seeded edge case and writes nothing', () => {
     const cases = [
-      [priya, 'ORD-5003', 219_900, 'outside_refund_window'],
-      [neha, 'ORD-5007', 100, 'already_fully_refunded'],
-      [rahul, 'ORD-5008', 100_000, 'account_under_review'],
-      [sana, 'ORD-5009', 100_000, 'account_suspended'],
-      [vikram, 'ORD-5010', 100_000, 'order_not_delivered'],
-      [vikram, 'ORD-5011', 100_000, 'payment_not_captured'],
-      [vikram, 'ORD-5013', 100_000, 'payment_disputed'],
-      [{ ...priya, card_last4: '0000' }, 'ORD-5001', 100_000, 'identity_not_verified'],
-      [priya, 'ORD-5004', 100_000, 'order_not_found'],
+      [priya, 'ORD-5003', 2_199, 'outside_refund_window'],
+      [neha, 'ORD-5007', 1, 'already_fully_refunded'],
+      [rahul, 'ORD-5008', 1_000, 'account_under_review'],
+      [sana, 'ORD-5009', 1_000, 'account_suspended'],
+      [vikram, 'ORD-5010', 1_000, 'order_not_delivered'],
+      [vikram, 'ORD-5011', 1_000, 'payment_not_captured'],
+      [vikram, 'ORD-5013', 1_000, 'payment_disputed'],
+      [{ ...priya, card_last4: '0000' }, 'ORD-5001', 1_000, 'identity_not_verified'],
+      [priya, 'ORD-5004', 1_000, 'order_not_found'],
     ];
     for (const [who, orderId, amount, code] of cases) {
       assert.equal(refund(who, orderId, amount).error, code, orderId);
@@ -203,7 +203,7 @@ describe('initiateRefund', () => {
   test('the refund window includes day 30 and ends right after it', () => {
     const deliveredAt = today.getTime() - 5 * DAY_MS; // ORD-5001
     const at = (ms) => createTools(db, { now: () => new Date(ms) });
-    const args = { ...priya, order_id: 'ORD-5001', amount: 100_000, reason: 'damaged' };
+    const args = { ...priya, order_id: 'ORD-5001', amount: 1_000, reason: 'damaged' };
     assert.equal(at(deliveredAt + 30 * DAY_MS).initiateRefund({ ...args, idempotency_key: 'day-30' }).ok, true);
     assert.equal(at(deliveredAt + 30 * DAY_MS + 1).initiateRefund({ ...args, idempotency_key: 'day-30+1ms' }).error, 'outside_refund_window');
   });

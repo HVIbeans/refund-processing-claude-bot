@@ -1,14 +1,14 @@
-// Refund policy. Amounts are in paise (₹1 = 100 paise).
-// The tools in step 6 enforce these rules; the agent's system prompt only describes them.
+// Refund policy. All amounts are whole rupees (no paise).
+// The tools in src/tools.js enforce these rules; the agent's system prompt only describes them.
 export const POLICY = Object.freeze({
   currency: 'INR',
   refundWindowDays: 30, // counted from orders.delivered_at
-  autoApproveLimit: Object.freeze({ standard: 500_000, vip: 2_500_000 }), // ₹5,000 / ₹25,000
+  autoApproveLimit: Object.freeze({ standard: 5_000, vip: 25_000 }),
   validReasons: Object.freeze(['damaged', 'wrong_item', 'not_as_described']),
 });
 
-const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' });
+const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 
-export function formatInr(paise) {
-  return inr.format(paise / 100);
+export function formatInr(rupees) {
+  return inr.format(rupees);
 }

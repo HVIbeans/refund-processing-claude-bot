@@ -86,7 +86,7 @@ test('a reused idempotency key is rejected', () => {
   );
 });
 
-test('formatInr shows paise as rupees', () => {
-  assert.equal(formatInr(349_900), '₹3,499.00');
-  assert.equal(formatInr(4_200_000), '₹42,000.00');
+test('formatInr shows whole rupees', () => {
+  assert.equal(formatInr(3_499), '₹3,499');
+  assert.equal(formatInr(42_000), '₹42,000');
 });

@@ -1,4 +1,4 @@
--- Mock refunds database. Money is stored as integer paise; dates are ISO-8601 strings.
+-- Mock refunds database. Money is stored as whole rupees (integers); dates are ISO-8601 strings.
 -- Constraints here are a backstop; the tool code (step 6) enforces the refund policy.
 
 CREATE TABLE customers (
