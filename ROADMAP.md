@@ -19,7 +19,7 @@ Tick items off as you go (`- [x]`).
 
 ## Phase 2 — Claude API agent (hand-built, tools via MCP)
 - [x] 9. Basic Messages API call with a system prompt containing the refund policy
-- [ ] 10. **MCP client** in the agent: connect to the server, list its tools, convert them to Claude tool definitions
+- [x] 10. **MCP client** in the agent: connect to the server, list its tools, convert them to Claude tool definitions
 - [ ] 11. Write the agent loop yourself (`tool_use` → call the MCP tool → `tool_result` → repeat until `end_turn`)
 - [ ] 12. Streaming responses
 - [ ] 13. Extended thinking for policy edge cases

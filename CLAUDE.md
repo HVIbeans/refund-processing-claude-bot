@@ -58,10 +58,11 @@ Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP clie
     - **Test refunds** made from Claude Code change the real DB. Undo them with `npm run db:reset`.
 - **Agent** (in progress, `src/agent/`): runs the Claude API tool-use loop and calls the MCP server's tools through an MCP client. Holds the refund policy in its system prompt.
   - **`systemPrompt.js`:** `buildSystemPrompt()` is generated from `src/policy.js`. Keep it deterministic (no dates or IDs) so it can be cached. It must not reveal the internal approval limits.
-  - **`chat.js`:** `createChat({ client, model })` keeps the history, appends the full `response.content` (thinking blocks included), and handles `refusal` / `max_tokens`. No tools yet (steps 10–11).
-  - **`repl.js`:** the terminal front end (`npm run chat`).
+  - **`chat.js`:** `createChat({ client, model })` keeps the history, appends the full `response.content` (thinking blocks included), and handles `refusal` / `max_tokens`. No tools yet (step 11).
+  - **`mcpClient.js`:** `connectMcp(transport)` connects an MCP client, lists the server's tools and converts them with `toClaudeTool()` into Claude tool definitions (`name`, `description`, `input_schema`). `stdioTransport()` runs `src/mcp/stdio.js` as a child process, so the agent uses the real `data/refunds.db`. The child gets the SDK's default environment allow-list, not our API key.
+  - **`repl.js`:** the terminal front end (`npm run chat`). It starts the MCP server at launch; `/tools` lists the tools and their token cost. The tools aren't sent to the API until the loop exists (step 11).
   - **Config:** `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` come from `.env`. The base URL is a gateway, so avoid beta headers unless we confirm it passes them through.
-  - **Tests:** `test/agent.test.js` uses a fake client. Tests never call the real API.
+  - **Tests:** `test/agent.test.js` uses a fake client, and `test/mcpClient.test.js` connects to the real server over `InMemoryTransport`. Tests never call the real API.
 - **Backend + Chat UI**: a minimal chat interface. The backend relays messages to the agent and returns its replies.
 
 Update this section when the real structure differs from the plan.
