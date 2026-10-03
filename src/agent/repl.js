@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { DEFAULT_MODEL, createChat } from './chat.js';
 import { connectMcp, stdioTransport } from './mcpClient.js';
 import { buildSystemPrompt } from './systemPrompt.js';
+import { POLICY } from '../policy.js';
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example).');
@@ -14,12 +15,9 @@ if (!process.env.ANTHROPIC_API_KEY) {
 
 const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
 const client = new Anthropic();
-const system = buildSystemPrompt();
-const chat = createChat({ client, model, system });
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 
-// Start the MCP server as a child process and list its tools. They aren't sent to the API until
-// step 11, when the agent loop can run them.
+// Start the MCP server as a child process and list its tools. The agent reaches data only through them.
 let mcp;
 try {
   mcp = await connectMcp(stdioTransport());
@@ -28,8 +26,13 @@ try {
   process.exit(1);
 }
 
+// The server's instructions go into the system prompt, as MCP clients usually do.
+const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
+const chat = createChat({ client, model, system, tools: mcp.tools, callTool: mcp.callTool, onToolCall: showToolCall });
+
 console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
+console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));
 console.log(dim("Type a message. /tools lists the agent's tools, /reset starts over, /exit quits.\n"));
 
 const rl = readline.createInterface({ input, output, prompt: 'you> ' });
@@ -48,9 +51,10 @@ for await (const raw of rl) {
     console.log(dim('(conversation cleared)\n'));
   } else if (line) {
     try {
-      const { text, stopReason, usage } = await chat.send(line);
+      const { text, stopReason, usage, rounds } = await chat.send(line);
+      const calls = rounds + 1;
       console.log(`\nagent> ${text}`);
-      console.log(dim(`[${usage.input_tokens} in / ${usage.output_tokens} out · ${stopReason}]\n`));
+      console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
     } catch (err) {
       console.error(`\n${describeError(err)}\n`);
     }
@@ -59,6 +63,23 @@ for await (const raw of rl) {
 }
 rl.close();
 await mcp.close(); // ends the server process
+
+function n(x = 0) {
+  return x.toLocaleString('en-IN');
+}
+
+// One dim line per tool call, so you can watch the loop. It shows the customer's email and card
+// digits, which is fine in your own terminal (redacting them in logs is a later step).
+function showToolCall({ name, input, isError, text }) {
+  let outcome = isError ? 'error' : 'ok';
+  try {
+    const { error } = JSON.parse(text);
+    if (error) outcome = `error: ${error}`;
+  } catch {
+    // not JSON, e.g. an input validation message from the MCP SDK
+  }
+  console.log(dim(`  ↳ ${name} ${JSON.stringify(input)} → ${outcome}`));
+}
 
 // Lists the tools and what their definitions would add to each request, using the token counting
 // endpoint (free, but a real API call). The gateway might not support it.

@@ -60,6 +60,19 @@ test("toClaudeTool doesn't change its input and falls back to the title", () => 
   assert.deepEqual(mcpTool, copy);
 });
 
+test('callTool returns the result text, and isError for invalid input', async () => {
+  const priya = { email: 'priya.shah@example.com', card_last4: '4242' };
+  const ok = await mcp.callTool('get_customer', priya);
+  assert.equal(ok.isError, false);
+  assert.equal(JSON.parse(ok.text).ok, true);
+
+  const bad = await mcp.callTool('initiate_refund', {
+    ...priya, order_id: 'ORD-5001', amount: 100, reason: 'changed_mind', idempotency_key: 'k1',
+  });
+  assert.equal(bad.isError, true);
+  assert.match(bad.text, /Input validation error/);
+});
+
 test('calls fail after close', async () => {
   await mcp.close();
   await assert.rejects(mcp.client.listTools());

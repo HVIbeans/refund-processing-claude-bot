@@ -15,6 +15,10 @@ export function toClaudeTool({ name, title, description, inputSchema }) {
   return { name, description: description ?? title ?? '', input_schema };
 }
 
+// Our server only returns text content (JSON). Anything else is noted rather than dropped silently.
+const resultText = ({ content = [] }) =>
+  content.map((b) => (b.type === 'text' ? b.text : `[unsupported ${b.type} content]`)).join('\n') || '(no output)';
+
 // Runs the server as a child process over stdio, the same command as .mcp.json, so it uses the
 // real data/refunds.db. With no `env` given, the SDK passes only a short allow-list of variables
 // (PATH, HOME and the like) to the child, so ANTHROPIC_API_KEY never reaches the server.
@@ -39,6 +43,12 @@ export async function connectMcp(transport) {
       instructions: client.getInstructions(),
       mcpTools,
       tools: mcpTools.map(toClaudeTool),
+      // Runs a tool for the agent loop. Policy failures and invalid input come back as
+      // isError results (not exceptions); only a protocol or connection failure throws.
+      callTool: async (name, input) => {
+        const result = await client.callTool({ name, arguments: input });
+        return { text: resultText(result), isError: Boolean(result.isError) };
+      },
       close: () => client.close(),
     };
   } catch (err) {
