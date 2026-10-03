@@ -18,7 +18,7 @@ Tick items off as you go (`- [x]`).
 - [x] 8. Connect the server to Claude Code with `claude mcp add` and query the mock data from the CLI
 
 ## Phase 2 — Claude API agent (hand-built, tools via MCP)
-- [ ] 9. Basic Messages API call with a system prompt containing the refund policy
+- [x] 9. Basic Messages API call with a system prompt containing the refund policy
 - [ ] 10. **MCP client** in the agent: connect to the server, list its tools, convert them to Claude tool definitions
 - [ ] 11. Write the agent loop yourself (`tool_use` → call the MCP tool → `tool_result` → repeat until `end_turn`)
 - [ ] 12. Streaming responses

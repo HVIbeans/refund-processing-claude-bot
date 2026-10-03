@@ -23,6 +23,7 @@ Plain JavaScript (ES modules, Node 24). No TypeScript or type definitions, by ch
 - `npm run db:reset`: rebuild `data/refunds.db` from the schema and seed data. Run it after changing either, or to undo refunds made during testing.
 - `npm run mcp`: run the MCP server over stdio (it waits for a client on stdin).
 - `npm run mcp:inspect`: open the MCP Inspector in the browser, connected to the server.
+- `npm run chat`: chat with the refund agent in the terminal. This calls the real Claude API and spends credit.
 - `npm test`: run all tests with the built-in `node:test` runner (finds `*.test.js` and files under `test/`).
 - Single test file: `node --test path/to/file.test.js`
 - Single test by name: `node --test --test-name-pattern="refund exceeds"`
@@ -55,7 +56,12 @@ Chat UI (barebones)  →  Backend (HTTP)  →  Agent (Claude API loop + MCP clie
   - **In Claude Code:** registered for the project in `.mcp.json` as `refund-tools`, so the tools appear here as `mcp__refund-tools__*` and use the real `data/refunds.db`.
     - **Permissions:** the three `get_*` tools are allowed in `.claude/settings.json`. `initiate_refund` and `escalate_to_human` ask first (outside auto mode).
     - **Test refunds** made from Claude Code change the real DB. Undo them with `npm run db:reset`.
-- **Agent**: runs the Claude API tool-use loop and calls the MCP server's tools through an MCP client. Holds the refund policy in its system prompt.
+- **Agent** (in progress, `src/agent/`): runs the Claude API tool-use loop and calls the MCP server's tools through an MCP client. Holds the refund policy in its system prompt.
+  - **`systemPrompt.js`:** `buildSystemPrompt()` is generated from `src/policy.js`. Keep it deterministic (no dates or IDs) so it can be cached. It must not reveal the internal approval limits.
+  - **`chat.js`:** `createChat({ client, model })` keeps the history, appends the full `response.content` (thinking blocks included), and handles `refusal` / `max_tokens`. No tools yet (steps 10–11).
+  - **`repl.js`:** the terminal front end (`npm run chat`).
+  - **Config:** `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` come from `.env`. The base URL is a gateway, so avoid beta headers unless we confirm it passes them through.
+  - **Tests:** `test/agent.test.js` uses a fake client. Tests never call the real API.
 - **Backend + Chat UI**: a minimal chat interface. The backend relays messages to the agent and returns its replies.
 
 Update this section when the real structure differs from the plan.
