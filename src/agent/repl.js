@@ -46,6 +46,7 @@ const chat = createChat({
   client, model, system,
   thinking: support.adaptiveThinking,
   effort: supportsEffort(effort) ? effort : undefined,
+  decide: true, // on by default in the REPL; toggle with /decision
   tools: mcp.tools, callTool: mcp.callTool,
   onText: (text) => emit('agent', text),
   onThinking: (text) => {
@@ -94,9 +95,9 @@ const effortLabel = () => chat.settings.effort ?? (support.effortLevels.length ?
 
 console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
-console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} ${dim(`(capabilities from the ${support.source})`)}`);
+console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} · decision: ${chat.settings.decide ? 'on' : 'off'} ${dim(`(capabilities from the ${support.source})`)}`);
 console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));
-console.log(dim('Commands: /tools, /effort [low|medium|high], /thinking (show/hide), /thinking on|off, /reset, /exit.\n'));
+console.log(dim('Commands: /tools, /effort [low|medium|high], /thinking (show/hide), /thinking on|off, /decision on|off, /reset, /exit.\n'));
 
 const rl = readline.createInterface({ input, output, prompt: 'you> ' });
 let closed = false;
@@ -128,6 +129,10 @@ for await (const raw of rl) {
     }
     else showThinking = !showThinking; // only what's printed
     console.log(dim(`(thinking: ${thinkingLabel()})\n`));
+  } else if (command === '/decision') {
+    if (arg === 'on' || arg === 'off') chat.setDecide(arg === 'on');
+    else if (arg) console.log(dim('(use /decision, /decision on or /decision off)'));
+    console.log(dim(`(decision extraction: ${chat.settings.decide ? 'on' : 'off'})\n`));
   } else if (line === '/reset') {
     chat.reset();
     console.log(dim('(conversation cleared)\n'));
@@ -136,7 +141,7 @@ for await (const raw of rl) {
     turnStart = true;
     shown = false;
     try {
-      const { text, fallback, stopReason, usage, rounds } = await chat.send(line);
+      const { text, fallback, stopReason, usage, calls, decision } = await chat.send(line);
       if (fallback) {
         // Our own reply (refusal, empty or cut-off tool call): it wasn't streamed.
         endLine();
@@ -144,7 +149,7 @@ for await (const raw of rl) {
       }
       endLine();
       if (stopReason === 'max_tokens' && !fallback) console.log(dim('(The reply was cut off.)'));
-      const calls = rounds + 1;
+      if (decision) showDecision(decision);
       // Output tokens include the thinking, so they rise with effort.
       console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
     } catch (err) {
@@ -175,6 +180,13 @@ function showToolCall({ name, input, isError, text }) {
   startBlock();
   console.log(dim(`  ↳ ${name} ${JSON.stringify(input)} → ${outcome}`));
   shown = false; // that call's output is kept; a later discard only concerns the next call
+}
+
+// The structured decision extracted after the reply (step 14): a forced second API call, so it
+// gets its own dim line rather than looking like part of the conversation.
+function showDecision({ decision, amount, reason, needs_human }) {
+  const amountPart = amount ? ` ₹${n(amount)}` : '';
+  console.log(dim(`  ↳ decision: ${decision}${amountPart} · needs_human: ${needs_human} · ${reason}`));
 }
 
 // Lists the tools and what their definitions would add to each request, using the token counting

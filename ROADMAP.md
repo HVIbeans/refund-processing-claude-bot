@@ -23,7 +23,7 @@ Tick items off as you go (`- [x]`).
 - [x] 11. Write the agent loop yourself (`tool_use` → call the MCP tool → `tool_result` → repeat until `end_turn`)
 - [x] 12. Streaming responses
 - [x] 13. Extended thinking for policy edge cases
-- [ ] 14. Structured outputs for the final decision (`{decision, amount, reason, needs_human}`)
+- [x] 14. Structured outputs for the final decision (`{decision, amount, reason, needs_human}`)
 - [ ] 15. Prompt caching on system prompt / policy / tools; measure savings via `usage` and token counting
 - [ ] 16. Replace the manual loop with the SDK's Tool Runner and compare
 

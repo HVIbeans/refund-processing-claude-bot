@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt } from '../src/agent/systemPrompt.js';
 import { createChat } from '../src/agent/chat.js';
+import { DECISION_TOOL } from '../src/agent/decision.js';
 
 // A stand-in for the Anthropic client: records each request and replies from a script.
 // Like the SDK's messages.stream(), it emits each text block as 'text' pieces (split in two, as
@@ -440,5 +441,89 @@ describe('createChat', () => {
     await chat.send('Hi');
     chat.reset();
     assert.equal(chat.history.length, 0);
+  });
+});
+
+describe('createChat structured decisions', () => {
+  const decide = (input, extra = {}) => ({ content: [{ type: 'tool_use', id: 'd1', name: 'record_decision', input }], ...extra });
+  const NONE = { decision: 'none', amount: 0, reason: 'just chatting', needs_human: false };
+
+  test('decide defaults to off: no extraction call is made', async () => {
+    const client = fakeClient([say('Hello!')]);
+    const result = await createChat({ client }).send('Hi');
+    assert.equal(result.decision, undefined);
+    assert.equal(result.calls, 1);
+    assert.equal(client.requests.length, 1);
+  });
+
+  test('decide: true requests a decision after a normal reply, with a forced tool_choice', async () => {
+    const client = fakeClient([say('Hello!'), decide(NONE)]);
+    const result = await createChat({ client, decide: true }).send('Hi');
+    assert.deepEqual(result.decision, NONE);
+    assert.equal(result.calls, 2);
+    assert.deepEqual(client.requests[1].tools, [DECISION_TOOL]);
+    assert.deepEqual(client.requests[1].tool_choice, { type: 'tool', name: 'record_decision' });
+  });
+
+  test('fallback replies (refusal, empty, cut-off tool call) still attempt decision extraction, from whatever already happened', async () => {
+    // Nothing happened before any of these, so each falls back to a harmless "none".
+    const refusal = await createChat({ client: fakeClient([{ content: [], stop_reason: 'refusal' }]), decide: true }).send('x');
+    assert.equal(refusal.decision.decision, 'none');
+
+    const empty = await createChat({ client: fakeClient([{ content: [] }]), decide: true }).send('x');
+    assert.equal(empty.decision.decision, 'none');
+
+    const cutOffClient = fakeClient([{ ...use(['a', 'initiate_refund']), stop_reason: 'max_tokens' }]);
+    const cutOff = await createChat({ client: cutOffClient, tools: TOOLS, callTool: fakeTools().callTool, decide: true }).send('x');
+    assert.equal(cutOff.decision.decision, 'none'); // the cut-off tool call itself was never run
+    assert.equal(cutOffClient.requests.length, 2); // the cut-off attempt, plus the extraction call
+  });
+
+  test('a tool-use round triggers exactly one extraction call, after the final reply', async () => {
+    const client = fakeClient([use(['a', 'get_order']), say('Found it.'), decide({ ...NONE, reason: 'lookup only' })]);
+    const result = await createChat({ client, tools: TOOLS, callTool: fakeTools().callTool, decide: true }).send('Where is my order?');
+    assert.equal(result.text, 'Found it.');
+    assert.equal(client.requests.length, 3);
+    assert.equal(result.calls, 3);
+    assert.deepEqual(result.decision, { ...NONE, reason: 'lookup only' });
+  });
+
+  test('setDecide toggles mid-conversation', async () => {
+    const client = fakeClient([say('First'), say('Second'), decide(NONE)]);
+    const chat = createChat({ client, decide: false });
+    await chat.send('Hi');
+    chat.setDecide(true);
+    await chat.send('Again');
+    assert.equal(client.requests.length, 3);
+  });
+
+  test("extraction usage is added into the turn's total usage", async () => {
+    const client = fakeClient([
+      say('Hi', { usage: { input_tokens: 100, output_tokens: 10 } }),
+      decide(NONE, { usage: { input_tokens: 50, output_tokens: 5 } }),
+    ]);
+    const result = await createChat({ client, decide: true }).send('Hi');
+    assert.deepEqual(result.usage, { input_tokens: 150, output_tokens: 15 });
+  });
+
+  test('a failed extraction call still returns the customer reply, with a safe fallback decision', async () => {
+    const client = fakeClient([say('Hello!'), new Error('rate limited')]);
+    const result = await createChat({ client, decide: true }).send('Hi');
+    assert.equal(result.text, 'Hello!');
+    assert.equal(result.decision.decision, 'none');
+    assert.match(result.decision.reason, /decision extraction failed/);
+  });
+
+  test('a refusal after a successful tool round still extracts a decision from what already happened', async () => {
+    const client = fakeClient([
+      use(['a', 'initiate_refund']),
+      { content: [], stop_reason: 'refusal' },
+      decide({ decision: 'approved', amount: 500, reason: 'refund issued before the refusal', needs_human: false }),
+    ]);
+    const tools = fakeTools({ initiate_refund: { text: '{"ok":true}', isError: false } });
+    const result = await createChat({ client, tools: TOOLS, callTool: tools.callTool, decide: true }).send('Refund please');
+    assert.equal(result.fallback, true);
+    assert.deepEqual(result.decision, { decision: 'approved', amount: 500, reason: 'refund issued before the refusal', needs_human: false });
+    assert.equal(client.requests.length, 3);
   });
 });

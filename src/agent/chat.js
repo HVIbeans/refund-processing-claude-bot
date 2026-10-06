@@ -3,6 +3,7 @@
 // The API is stateless: every request sends the system prompt, the tools and the whole history,
 // and we append each reply (and each round of tool results) to that history.
 import { buildSystemPrompt } from "./systemPrompt.js";
+import { extractDecision } from "./decision.js";
 
 // Used when ANTHROPIC_MODEL isn't set. It must be a model the gateway serves:
 // list them with client.models.list().
@@ -46,6 +47,7 @@ export function createChat({
   // (interleaved thinking). On Sonnet 4.6, leaving `thinking` out means no thinking at all.
   thinking = true,
   effort, // "low" | "medium" | "high"; unset uses the model's default (high on Sonnet 4.6)
+  decide = false, // extract a structured {decision, amount, reason, needs_human} after each reply (an extra API call)
   tools = [], // Claude tool definitions (from mcpClient.js)
   callTool, // async (name, input) => { text, isError }
   maxRounds = 8, // tool rounds per customer message before the model must answer
@@ -58,7 +60,7 @@ export function createChat({
 }) {
   const history = [];
   // Read on every request, so they can change mid-conversation without losing the history.
-  const settings = { thinking, effort };
+  const settings = { thinking, effort, decide };
 
   // A message that ends in tool results is a user message, so new text joins it (results first,
   // then text). Starting a new user message instead would break the user/assistant alternation.
@@ -82,6 +84,19 @@ export function createChat({
     }
   }
 
+  // A failure here must never cost the customer their reply: fall back instead of throwing.
+  async function runDecision() {
+    try {
+      const { usage: decisionUsage, ...fields } = await extractDecision({ client, model, system, history });
+      return { fields, usage: decisionUsage };
+    } catch (err) {
+      return {
+        fields: { decision: "none", amount: 0, reason: `decision extraction failed: ${err.message}`, needs_human: false },
+        usage: {},
+      };
+    }
+  }
+
   async function send(text) {
     const before = history.length;
     const merged = pushUserText(text);
@@ -95,6 +110,7 @@ export function createChat({
 
     const usage = {};
     let rounds = 0;
+    let calls = 0; // total API calls this turn, including the decision extraction call
     for (;;) {
       const lastRound = rounds >= maxRounds;
       let response;
@@ -137,10 +153,23 @@ export function createChat({
         throw err;
       }
       addUsage(usage, response.usage);
+      calls += 1;
 
       const { stop_reason: stopReason, content } = response;
-      // fallback: the text is one of our own replies, which was never streamed.
-      const result = (reply, fallback = false) => ({ text: reply, fallback, stopReason, usage, rounds });
+      const result = (reply, fallback, decision) => ({ text: reply, fallback, stopReason, usage, rounds, calls, decision });
+      // The single exit point for this turn: even a refusal or a cut-off reply may follow a tool
+      // round that already ran (e.g. a refund), so history (rolled back to that round, if any) can
+      // still hold something worth recording.
+      async function finish(reply, fallback) {
+        let decision;
+        if (settings.decide) {
+          const { fields, usage: decisionUsage } = await runDecision();
+          decision = fields;
+          addUsage(usage, decisionUsage);
+          calls += 1;
+        }
+        return result(reply, fallback, decision);
+      }
       // Drops this reply from the history, and withdraws whatever of it was already shown.
       const discard = () => {
         rollback();
@@ -148,25 +177,25 @@ export function createChat({
       };
       if (stopReason === "refusal") {
         discard(); // keep the declined turn out of the conversation
-        return result(REFUSAL_REPLY, true);
+        return finish(REFUSAL_REPLY, true);
       }
       if (content.length === 0) {
         // The API rejects an empty assistant turn anywhere but last, so it would break every later request.
         rollback();
-        return result(EMPTY_REPLY, true);
+        return finish(EMPTY_REPLY, true);
       }
       const toolUses = content.filter((b) => b.type === "tool_use");
       if (toolUses.length > 0 && (stopReason === "max_tokens" || lastRound)) {
         // A cut-off tool input may be incomplete, so never run it. (On the last round tool_choice
         // rules tool calls out; this only guards against looping forever.)
         discard();
-        return result(CUT_OFF_REPLY, true);
+        return finish(CUT_OFF_REPLY, true);
       }
       if (stopReason === "max_tokens" && content.at(-1).type === "thinking") {
         // Cut off mid-thinking: the block never got its signature (it arrives as the block ends),
         // and sending an unsigned thinking block back would fail every later request.
         discard();
-        return result(CUT_OFF_REPLY, true);
+        return finish(CUT_OFF_REPLY, true);
       }
 
       // Append the full content (not just the text): it can include thinking blocks and tool_use
@@ -175,7 +204,7 @@ export function createChat({
       if (stopReason !== "tool_use") {
         let reply = textOf(content);
         if (stopReason === "max_tokens") reply += "\n\n(The reply was cut off.)";
-        return result(reply);
+        return finish(reply, false);
       }
 
       // Run the requested tools one at a time, in order (refunds have side effects), and send every
@@ -199,6 +228,9 @@ export function createChat({
     },
     setThinking: (on) => {
       settings.thinking = on;
+    },
+    setDecide: (on) => {
+      settings.decide = on;
     },
     settings,
     reset: () => {
