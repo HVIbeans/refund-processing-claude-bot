@@ -7,6 +7,9 @@ export const POLICY = Object.freeze({
   validReasons: Object.freeze(['damaged', 'wrong_item', 'not_as_described']),
 });
 
+// Shared cap for free-text fields (reason_details, decision reasons, escalation summaries).
+export const MAX_TEXT = 2000;
+
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 
 export function formatInr(rupees) {

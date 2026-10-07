@@ -48,6 +48,7 @@ export function createChat({
   thinking = true,
   effort, // "low" | "medium" | "high"; unset uses the model's default (high on Sonnet 4.6)
   decide = false, // extract a structured {decision, amount, reason, needs_human} after each reply (an extra API call)
+  cache = false, // mark the system prompt and tool list as a prompt-cache breakpoint (both are identical every request)
   tools = [], // Claude tool definitions (from mcpClient.js)
   callTool, // async (name, input) => { text, isError }
   maxRounds = 8, // tool rounds per customer message before the model must answer
@@ -60,7 +61,21 @@ export function createChat({
 }) {
   const history = [];
   // Read on every request, so they can change mid-conversation without losing the history.
-  const settings = { thinking, effort, decide };
+  const settings = { thinking, effort, decide, cache };
+
+  // Both are byte-identical on every request for the life of the conversation, so this is a pure
+  // win: a cache read costs ~10% of normal input price, vs. a one-time ~1.25x write premium.
+  // Generally available: no beta header needed (only the 1-hour TTL variant would need one).
+  function cachedSystem() {
+    return settings.cache
+      ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }]
+      : system;
+  }
+  function cachedTools() {
+    return settings.cache && tools.length > 0
+      ? [...tools.slice(0, -1), { ...tools.at(-1), cache_control: { type: "ephemeral" } }]
+      : tools;
+  }
 
   // A message that ends in tool results is a user message, so new text joins it (results first,
   // then text). Starting a new user message instead would break the user/assistant alternation.
@@ -87,7 +102,13 @@ export function createChat({
   // A failure here must never cost the customer their reply: fall back instead of throwing.
   async function runDecision() {
     try {
-      const { usage: decisionUsage, ...fields } = await extractDecision({ client, model, system, history });
+      // Sharing cachedTools() here (not the raw tools) only when caching is on is what lets this
+      // call land a cache hit on the prefix the conversational call just wrote; off, it reproduces
+      // decision.js's original behavior of sending no MCP tools at all.
+      const sharedTools = settings.cache ? cachedTools() : [];
+      const { usage: decisionUsage, ...fields } = await extractDecision({
+        client, model, system: cachedSystem(), history, tools: sharedTools,
+      });
       return { fields, usage: decisionUsage };
     } catch (err) {
       return {
@@ -123,9 +144,9 @@ export function createChat({
         const stream = client.messages.stream({
           model,
           max_tokens: maxTokens,
-          system,
+          system: cachedSystem(),
           messages: history,
-          ...(tools.length > 0 && { tools }),
+          ...(tools.length > 0 && { tools: cachedTools() }),
           // Out of rounds: the model must answer in text with what it has.
           ...(tools.length > 0 && lastRound && { tool_choice: { type: "none" } }),
           // Both are generally available on Sonnet 4.6: no beta headers needed.
@@ -231,6 +252,9 @@ export function createChat({
     },
     setDecide: (on) => {
       settings.decide = on;
+    },
+    setCache: (on) => {
+      settings.cache = on;
     },
     settings,
     reset: () => {

@@ -5,10 +5,9 @@
 // Tools are stateless: each call re-verifies identity with email + the last 4 digits of a card
 // on file, and only returns orders that belong to the verified customer.
 // Results are plain objects: { ok: true, ... } or { ok: false, error: '<code>', message }.
-import { POLICY, formatInr } from './policy.js';
+import { POLICY, MAX_TEXT, formatInr } from './policy.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_TEXT = 2000;
 const ESCALATION_TYPES = ['account', 'risk']; // refund_approval escalations are created by initiateRefund
 
 const fail = (error, message, extra = {}) => ({ ok: false, error, message, ...extra });

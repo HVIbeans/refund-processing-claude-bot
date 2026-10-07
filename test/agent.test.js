@@ -525,5 +525,62 @@ describe('createChat structured decisions', () => {
     assert.equal(result.fallback, true);
     assert.deepEqual(result.decision, { decision: 'approved', amount: 500, reason: 'refund issued before the refusal', needs_human: false });
     assert.equal(client.requests.length, 3);
+    // The extraction call's history still ends in the tool-result message; it must not send two
+    // consecutive user messages (the real API rejects that).
+    assertValidMessages(client.requests[2].messages);
+  });
+});
+
+describe('createChat prompt caching', () => {
+  const CACHE_CONTROL = { type: 'ephemeral' };
+
+  test('cache defaults to off: system is a plain string, tools carry no cache_control', async () => {
+    const client = fakeClient([say('Hi')]);
+    await createChat({ client, tools: TOOLS }).send('Hi');
+    assert.equal(typeof client.requests[0].system, 'string');
+    assert.equal('cache_control' in client.requests[0].tools[0], false);
+  });
+
+  test('cache: true marks the system prompt and the last tool as cache breakpoints', async () => {
+    const twoTools = [...TOOLS, { name: 'get_order', description: 'Look up', input_schema: { type: 'object', properties: {} } }];
+    const client = fakeClient([say('Hi')]);
+    await createChat({ client, system: 'SYSTEM', tools: twoTools, cache: true }).send('Hi');
+
+    const req = client.requests[0];
+    assert.deepEqual(req.system, [{ type: 'text', text: 'SYSTEM', cache_control: CACHE_CONTROL }]);
+    assert.equal('cache_control' in req.tools[0], false);
+    assert.deepEqual(req.tools[1].cache_control, CACHE_CONTROL);
+    assert.equal(req.tools[0].name, 'get_customer');
+    assert.equal(req.tools[1].name, 'get_order');
+  });
+
+  test('cache: true, decide: true: the decision call shares the exact cached system and tools prefix', async () => {
+    const decide = (input) => ({ content: [{ type: 'tool_use', id: 'd1', name: 'record_decision', input }] });
+    const NONE = { decision: 'none', amount: 0, reason: 'just chatting', needs_human: false };
+    const client = fakeClient([say('Hi'), decide(NONE)]);
+    await createChat({ client, system: 'SYSTEM', tools: TOOLS, cache: true, decide: true }).send('Hi');
+
+    const [conversational, extraction] = client.requests;
+    assert.deepEqual(extraction.system, conversational.system);
+    assert.deepEqual(extraction.tools.slice(0, TOOLS.length), conversational.tools);
+    assert.equal(extraction.tools.at(-1).name, 'record_decision');
+  });
+
+  test('decide: true with cache left off: the decision call still sends only its own tool, unchanged', async () => {
+    const decide = (input) => ({ content: [{ type: 'tool_use', id: 'd1', name: 'record_decision', input }] });
+    const NONE = { decision: 'none', amount: 0, reason: 'just chatting', needs_human: false };
+    const client = fakeClient([say('Hi'), decide(NONE)]);
+    await createChat({ client, tools: TOOLS, decide: true }).send('Hi');
+    assert.deepEqual(client.requests[1].tools, [DECISION_TOOL]);
+  });
+
+  test('setCache toggles mid-conversation', async () => {
+    const client = fakeClient([say('First'), say('Second')]);
+    const chat = createChat({ client, system: 'SYSTEM', tools: TOOLS, cache: false });
+    await chat.send('Hi');
+    assert.equal(typeof client.requests[0].system, 'string');
+    chat.setCache(true);
+    await chat.send('Again');
+    assert.notEqual(typeof client.requests[1].system, 'string');
   });
 });

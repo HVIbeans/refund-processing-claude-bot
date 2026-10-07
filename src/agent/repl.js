@@ -7,7 +7,7 @@ import { DEFAULT_MODEL, createChat } from './chat.js';
 import { connectMcp, stdioTransport } from './mcpClient.js';
 import { modelSupport } from './capabilities.js';
 import { buildSystemPrompt } from './systemPrompt.js';
-import { POLICY } from '../policy.js';
+import { POLICY, formatInr } from '../policy.js';
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example).');
@@ -47,6 +47,7 @@ const chat = createChat({
   thinking: support.adaptiveThinking,
   effort: supportsEffort(effort) ? effort : undefined,
   decide: true, // on by default in the REPL; toggle with /decision
+  cache: true, // on by default in the REPL; toggle with /cache
   tools: mcp.tools, callTool: mcp.callTool,
   onText: (text) => emit('agent', text),
   onThinking: (text) => {
@@ -95,9 +96,9 @@ const effortLabel = () => chat.settings.effort ?? (support.effortLevels.length ?
 
 console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
-console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} · decision: ${chat.settings.decide ? 'on' : 'off'} ${dim(`(capabilities from the ${support.source})`)}`);
+console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} · decision: ${chat.settings.decide ? 'on' : 'off'} · cache: ${chat.settings.cache ? 'on' : 'off'} ${dim(`(capabilities from the ${support.source})`)}`);
 console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));
-console.log(dim('Commands: /tools, /effort [low|medium|high], /thinking (show/hide), /thinking on|off, /decision on|off, /reset, /exit.\n'));
+console.log(dim('Commands: /tools, /effort [low|medium|high], /thinking (show/hide), /thinking on|off, /decision on|off, /cache on|off, /reset, /exit.\n'));
 
 const rl = readline.createInterface({ input, output, prompt: 'you> ' });
 let closed = false;
@@ -133,6 +134,10 @@ for await (const raw of rl) {
     if (arg === 'on' || arg === 'off') chat.setDecide(arg === 'on');
     else if (arg) console.log(dim('(use /decision, /decision on or /decision off)'));
     console.log(dim(`(decision extraction: ${chat.settings.decide ? 'on' : 'off'})\n`));
+  } else if (command === '/cache') {
+    if (arg === 'on' || arg === 'off') chat.setCache(arg === 'on');
+    else if (arg) console.log(dim('(use /cache, /cache on or /cache off)'));
+    console.log(dim(`(prompt caching: ${chat.settings.cache ? 'on' : 'off'})\n`));
   } else if (line === '/reset') {
     chat.reset();
     console.log(dim('(conversation cleared)\n'));
@@ -150,8 +155,12 @@ for await (const raw of rl) {
       endLine();
       if (stopReason === 'max_tokens' && !fallback) console.log(dim('(The reply was cut off.)'));
       if (decision) showDecision(decision);
-      // Output tokens include the thinking, so they rise with effort.
-      console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
+      // Output tokens include the thinking, so they rise with effort. A cache write costs ~1.25x
+      // normal input price; a cache read costs ~10% of it - this is where the savings become visible.
+      const cacheRead = usage.cache_read_input_tokens;
+      const cacheWrite = usage.cache_creation_input_tokens;
+      const cachePart = cacheRead || cacheWrite ? ` · cache: ${n(cacheRead)} read / ${n(cacheWrite)} write` : '';
+      console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out${cachePart} · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
     } catch (err) {
       endLine(); // the error may arrive mid-reply
       console.error(`\n${describeError(err)}\n`);
@@ -185,7 +194,7 @@ function showToolCall({ name, input, isError, text }) {
 // The structured decision extracted after the reply (step 14): a forced second API call, so it
 // gets its own dim line rather than looking like part of the conversation.
 function showDecision({ decision, amount, reason, needs_human }) {
-  const amountPart = amount ? ` ₹${n(amount)}` : '';
+  const amountPart = amount ? ` ${formatInr(amount)}` : '';
   console.log(dim(`  ↳ decision: ${decision}${amountPart} · needs_human: ${needs_human} · ${reason}`));
 }
 
