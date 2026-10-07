@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import readline from 'node:readline';
 import Anthropic from '@anthropic-ai/sdk';
 import { DEFAULT_MODEL, createChat } from './chat.js';
+import { createToolRunnerChat } from './toolRunnerChat.js';
 import { connectMcp, stdioTransport } from './mcpClient.js';
 import { modelSupport } from './capabilities.js';
 import { buildSystemPrompt } from './systemPrompt.js';
@@ -40,9 +41,13 @@ const supportsEffort = (level) => support.effortLevels.includes(level);
 // Only controls what's printed: hidden thinking is still generated, kept in the history and billed.
 let showThinking = true;
 
+// Roadmap step 16: compare the hand-written loop against the SDK's beta Tool Runner.
+const usingRunner = process.env.ANTHROPIC_LOOP === 'runner';
+const createAgent = usingRunner ? createToolRunnerChat : createChat;
+
 // The server's instructions go into the system prompt, as MCP clients usually do.
 const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
-const chat = createChat({
+const chat = createAgent({
   client, model, system,
   thinking: support.adaptiveThinking,
   effort: supportsEffort(effort) ? effort : undefined,
@@ -94,7 +99,7 @@ const thinkingLabel = () => {
 };
 const effortLabel = () => chat.settings.effort ?? (support.effortLevels.length ? 'model default' : 'not supported');
 
-console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host}`);
+console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host} · loop: ${usingRunner ? 'tool runner (beta)' : 'manual'}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
 console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} · decision: ${chat.settings.decide ? 'on' : 'off'} · cache: ${chat.settings.cache ? 'on' : 'off'} ${dim(`(capabilities from the ${support.source})`)}`);
 console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));

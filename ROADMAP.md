@@ -25,7 +25,7 @@ Tick items off as you go (`- [x]`).
 - [x] 13. Extended thinking for policy edge cases
 - [x] 14. Structured outputs for the final decision (`{decision, amount, reason, needs_human}`)
 - [x] 15. Prompt caching on system prompt / policy / tools; measure savings via `usage` and token counting
-- [ ] 16. Replace the manual loop with the SDK's Tool Runner and compare
+- [x] 16. Replace the manual loop with the SDK's Tool Runner and compare
 
 ## Phase 3 — Production-shaped
 - [ ] 17. Human-in-the-loop approval above an amount threshold
