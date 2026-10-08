@@ -45,10 +45,15 @@ let showThinking = true;
 const usingRunner = process.env.ANTHROPIC_LOOP === 'runner';
 const createAgent = usingRunner ? createToolRunnerChat : createChat;
 
-// Step 17: these are for a human reviewer (via Claude Code's own MCP connection), never the
-// customer-facing agent - approving its own escalated refunds would defeat the point.
-const HUMAN_ONLY_TOOLS = new Set(['list_escalations', 'resolve_refund_approval']);
-const agentTools = mcp.tools.filter((t) => !HUMAN_ONLY_TOOLS.has(t.name));
+// Steps 17 and 19: the first two are for a human reviewer (via Claude Code's own MCP
+// connection), never the customer-facing agent - approving its own escalated refunds would
+// defeat the point. log_decision/list_tool_calls/list_decisions are the audit log (step 19):
+// log_decision is harness-only (called directly below, never by the model - whether a
+// decision gets logged isn't the model's call), and the list_* tools are for a human reviewer.
+const NOT_FOR_AGENT_TOOLS = new Set([
+  'list_escalations', 'resolve_refund_approval', 'log_decision', 'list_tool_calls', 'list_decisions',
+]);
+const agentTools = mcp.tools.filter((t) => !NOT_FOR_AGENT_TOOLS.has(t.name));
 
 // The server's instructions go into the system prompt, as MCP clients usually do.
 const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
@@ -164,7 +169,10 @@ for await (const raw of rl) {
       }
       endLine();
       if (stopReason === 'max_tokens' && !fallback) console.log(dim('(The reply was cut off.)'));
-      if (decision) showDecision(decision);
+      if (decision) {
+        showDecision(decision);
+        await logDecision(decision);
+      }
       // Output tokens include the thinking, so they rise with effort. A cache write costs ~1.25x
       // normal input price; a cache read costs ~10% of it - this is where the savings become visible.
       const cacheRead = usage.cache_read_input_tokens;
@@ -206,6 +214,18 @@ function showToolCall({ name, input, isError, text }) {
 function showDecision({ decision, amount, reason, needs_human }) {
   const amountPart = amount ? ` ${formatInr(amount)}` : '';
   console.log(dim(`  ↳ decision: ${decision}${amountPart} · needs_human: ${needs_human} · ${reason}`));
+}
+
+// Step 19: logs the decision to the audit log directly - bypassing the LLM entirely, since
+// whether this gets logged must not be something the model decides. A logging failure must
+// never break the turn, so this only reports it quietly rather than throwing.
+async function logDecision(decision) {
+  try {
+    const { isError, text } = await mcp.callTool('log_decision', decision);
+    if (isError) console.log(dim(`  ↳ (decision logging failed: ${text})`));
+  } catch (err) {
+    console.log(dim(`  ↳ (decision logging failed: ${err.message})`));
+  }
 }
 
 // Lists the tools and what their definitions would add to each request, using the token counting

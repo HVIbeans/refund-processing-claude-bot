@@ -357,3 +357,84 @@ describe('concurrent writes', () => {
     assert.equal(toolsB.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' }).ok, true);
   });
 });
+
+describe('audit log', () => {
+  const toolCallRow = (toolName) => db.prepare('SELECT * FROM tool_call_log WHERE tool_name = ?').get(toolName);
+
+  test('every call is logged, by name, with its input/output and is_error', () => {
+    tools.getCustomer(priya);
+    const okRow = toolCallRow('get_customer');
+    assert.ok(okRow);
+    assert.deepEqual(JSON.parse(okRow.input), priya);
+    assert.equal(JSON.parse(okRow.output).ok, true);
+    assert.equal(okRow.is_error, 0);
+
+    tools.getCustomer({ email: 'nobody@example.com', card_last4: '0000' });
+    const errorRows = db.prepare("SELECT * FROM tool_call_log WHERE tool_name = 'get_customer' AND is_error = 1").all();
+    assert.equal(errorRows.length, 1);
+  });
+
+  test('a mutating tool (initiateRefund) is still logged, including a try_again result', () => {
+    refund(priya, 'ORD-5001', 500);
+    assert.ok(toolCallRow('initiate_refund'));
+  });
+
+  describe('logDecision', () => {
+    test('writes a row and validates its fields', () => {
+      const result = tools.logDecision({ decision: 'approved', amount: 500, reason: 'within window', needs_human: false });
+      assert.equal(result.ok, true);
+      const row = db.prepare('SELECT * FROM decision_log WHERE id = ?').get(result.id);
+      assert.deepEqual(
+        { decision: row.decision, amount: row.amount, reason: row.reason, needs_human: row.needs_human },
+        { decision: 'approved', amount: 500, reason: 'within window', needs_human: 0 },
+      );
+    });
+
+    test('rejects an invalid decision, a negative amount, an empty reason, and a non-boolean needs_human', () => {
+      const base = { decision: 'approved', amount: 100, reason: 'r', needs_human: false };
+      assert.equal(tools.logDecision({ ...base, decision: 'maybe' }).error, 'invalid_decision');
+      assert.equal(tools.logDecision({ ...base, amount: -1 }).error, 'invalid_amount');
+      assert.equal(tools.logDecision({ ...base, reason: '  ' }).error, 'invalid_reason');
+      assert.equal(tools.logDecision({ ...base, needs_human: 'yes' }).error, 'invalid_needs_human');
+    });
+  });
+
+  describe('listToolCalls / listDecisions', () => {
+    test('listToolCalls filters by tool_name and limit, newest first', () => {
+      tools.getCustomer(priya);
+      tools.getCustomer(arjun);
+      tools.getOrder({ ...priya, order_id: 'ORD-5001' });
+
+      const customerCalls = tools.listToolCalls({ tool_name: 'get_customer' });
+      assert.equal(customerCalls.ok, true);
+      assert.ok(customerCalls.tool_calls.every((c) => c.tool_name === 'get_customer'));
+      assert.deepEqual(customerCalls.tool_calls[0].input, arjun); // newest first
+
+      const limited = tools.listToolCalls({ limit: 1 });
+      assert.equal(limited.tool_calls.length, 1);
+    });
+
+    test('listToolCalls filters by since', () => {
+      tools.getCustomer(priya);
+      const future = new Date(Date.now() + 60_000).toISOString();
+      assert.deepEqual(tools.listToolCalls({ since: future }).tool_calls, []);
+    });
+
+    test('listDecisions returns logged decisions, newest first', () => {
+      tools.logDecision({ decision: 'denied', amount: 0, reason: 'outside window', needs_human: false });
+      tools.logDecision({ decision: 'escalated', amount: 9000, reason: 'above limit', needs_human: true });
+      const result = tools.listDecisions({ limit: 1 });
+      assert.equal(result.decisions.length, 1);
+      assert.equal(result.decisions[0].decision, 'escalated');
+      assert.equal(result.decisions[0].needs_human, true);
+    });
+
+    test('rejects an invalid since, tool_name, or limit', () => {
+      assert.equal(tools.listToolCalls({ since: 'not-a-date' }).error, 'invalid_since');
+      assert.equal(tools.listToolCalls({ tool_name: 42 }).error, 'invalid_tool_name');
+      assert.equal(tools.listToolCalls({ limit: 0 }).error, 'invalid_limit');
+      assert.equal(tools.listToolCalls({ limit: 201 }).error, 'invalid_limit');
+      assert.equal(tools.listDecisions({ since: 'not-a-date' }).error, 'invalid_since');
+    });
+  });
+});

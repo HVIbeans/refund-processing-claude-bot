@@ -42,19 +42,23 @@ const callJson = async (name, args) => {
 };
 const refundCount = () => db.prepare('SELECT count(*) AS n FROM refunds').get().n;
 
-test('lists the seven tools with descriptions, schemas and read-only hints', async () => {
+test('lists the ten tools with descriptions, schemas and read-only hints', async () => {
   const { tools } = await client.listTools();
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
   assert.deepEqual(Object.keys(byName).sort(), [
-    'escalate_to_human', 'get_customer', 'get_order', 'get_payment',
-    'initiate_refund', 'list_escalations', 'resolve_refund_approval',
+    'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'initiate_refund',
+    'list_decisions', 'list_escalations', 'list_tool_calls', 'log_decision', 'resolve_refund_approval',
   ]);
   for (const tool of tools) {
     assert.ok(tool.description, tool.name);
     assert.equal(tool.inputSchema.type, 'object', tool.name);
   }
-  for (const name of ['get_customer', 'get_order', 'get_payment', 'list_escalations']) assert.equal(byName[name].annotations.readOnlyHint, true, name);
-  for (const name of ['initiate_refund', 'escalate_to_human', 'resolve_refund_approval']) assert.equal(byName[name].annotations.readOnlyHint, false, name);
+  for (const name of ['get_customer', 'get_order', 'get_payment', 'list_escalations', 'list_tool_calls', 'list_decisions']) {
+    assert.equal(byName[name].annotations.readOnlyHint, true, name);
+  }
+  for (const name of ['initiate_refund', 'escalate_to_human', 'resolve_refund_approval', 'log_decision']) {
+    assert.equal(byName[name].annotations.readOnlyHint, false, name);
+  }
   assert.deepEqual(byName.initiate_refund.inputSchema.properties.reason.enum, ['damaged', 'wrong_item', 'not_as_described']);
   assert.deepEqual(byName.initiate_refund.inputSchema.required.sort(), ['amount', 'card_last4', 'email', 'idempotency_key', 'order_id', 'reason']);
 });
@@ -110,4 +114,27 @@ test('list_escalations and resolve_refund_approval let a human review and resolv
   const again = await callJson('resolve_refund_approval', { escalation_id: 'ESC-401', decision: 'approve' });
   assert.equal(again.isError, true);
   assert.equal(again.body.error, 'already_resolved');
+});
+
+test('log_decision and list_tool_calls/list_decisions record and surface the audit log', async () => {
+  await callJson('get_customer', priya);
+  const logged = await callJson('log_decision', { decision: 'approved', amount: 1000, reason: 'within window', needs_human: false });
+  assert.equal(logged.isError, false);
+
+  const decisions = await callJson('list_decisions', {});
+  assert.equal(decisions.isError, false);
+  assert.deepEqual(decisions.body.decisions[0], {
+    id: logged.body.id, at: logged.body.at, decision: 'approved', amount: 1000, reason: 'within window', needs_human: false,
+  });
+
+  const toolCalls = await callJson('list_tool_calls', { tool_name: 'get_customer', limit: 5 });
+  assert.equal(toolCalls.isError, false);
+  assert.ok(toolCalls.body.tool_calls.some((c) => c.tool_name === 'get_customer' && c.input.email === priya.email));
+
+  // A bad `decision` value never reaches tools.js at all here: the MCP schema (z.enum) rejects
+  // it first, same as initiate_refund's bad-input test above. tools.js's own validation (for a
+  // direct, non-MCP caller) is tested in tools.test.js instead.
+  const { isError, text } = await call('log_decision', { decision: 'maybe', amount: 0, reason: 'x', needs_human: false });
+  assert.equal(isError, true);
+  assert.match(text, /Input validation error/);
 });

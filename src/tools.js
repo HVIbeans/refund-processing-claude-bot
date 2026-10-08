@@ -10,6 +10,10 @@ import { POLICY, MAX_TEXT, formatInr } from './policy.js';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ESCALATION_TYPES = ['account', 'risk']; // refund_approval escalations are created by initiateRefund
 const RESOLUTION_DECISIONS = ['approve', 'reject'];
+// Mirrors decision.js's DECISIONS. Duplicated rather than imported: src/tools.js is the data
+// layer and shouldn't depend on src/agent/* (the same reason refunds.reason duplicates
+// POLICY.validReasons in schema.sql instead of the schema importing policy.js).
+const DECISIONS = ['none', 'approved', 'partial', 'denied', 'escalated'];
 
 const fail = (error, message, extra = {}) => ({ ok: false, error, message, ...extra });
 
@@ -80,6 +84,21 @@ export function createTools(db, { now = () => new Date() } = {}) {
   const findEscalation = db.prepare('SELECT id, type, status, refund_id FROM escalations WHERE id = ?');
   const updateRefundResolution = db.prepare('UPDATE refunds SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?');
   const resolveEscalationRow = db.prepare("UPDATE escalations SET status = 'resolved', resolved_at = ?, resolution_note = ? WHERE id = ?");
+  const insertToolCallLog = db.prepare('INSERT INTO tool_call_log (id, at, tool_name, input, output, is_error) VALUES (?, ?, ?, ?, ?, ?)');
+  const insertDecisionLog = db.prepare('INSERT INTO decision_log (id, at, decision, amount, reason, needs_human) VALUES (?, ?, ?, ?, ?, ?)');
+  // Order by rowid (not id, which sorts lexicographically past TCL-9) as a tiebreaker for `at`:
+  // two calls within the same ISO second (easy, e.g. in a fast burst or under a fixed clock in
+  // tests) would otherwise sort arbitrarily, breaking "newest first".
+  const listToolCallsStmt = db.prepare(`
+    SELECT id, at, tool_name, input, output, is_error FROM tool_call_log
+    WHERE (? IS NULL OR at >= ?) AND (? IS NULL OR tool_name = ?)
+    ORDER BY at DESC, rowid DESC LIMIT ?
+  `);
+  const listDecisionsStmt = db.prepare(`
+    SELECT id, at, decision, amount, reason, needs_human FROM decision_log
+    WHERE (? IS NULL OR at >= ?)
+    ORDER BY at DESC, rowid DESC LIMIT ?
+  `);
 
   // Runs fn() inside a write transaction, translating lock contention or the DB's own
   // refund_total_guard trigger into a stable { error: 'try_again' } instead of a raw exception.
@@ -99,6 +118,34 @@ export function createTools(db, { now = () => new Date() } = {}) {
       if (isRetryable(err)) return fail('try_again', retryMessage);
       throw err;
     }
+  }
+
+  // Best-effort: a write-lock conflict (another connection mid-transaction, exactly what
+  // audited() itself may be reporting as try_again) must never stop the real result from
+  // being returned - the log entry is just dropped rather than crashing the call.
+  function logToolCall(name, input, output, isError) {
+    try {
+      insertToolCallLog.run(nextId('tool_call_log', 'TCL-', 1), now().toISOString(), name, JSON.stringify(input ?? null), JSON.stringify(output), isError ? 1 : 0);
+    } catch (err) {
+      console.error('[audit] failed to log tool call:', err.message);
+    }
+  }
+
+  // Wraps every tool function so every call is audited (step 19), for both consumers: the
+  // customer-facing agent and a human reviewer alike - whichever client the MCP server is
+  // actually talking to. An exception is logged too (as the same internal_error server.js's
+  // handle() reports) and then rethrown, so existing error handling is unaffected.
+  function audited(name, fn) {
+    return (input) => {
+      try {
+        const output = fn(input);
+        logToolCall(name, input, output, !output.ok);
+        return output;
+      } catch (err) {
+        logToolCall(name, input, { ok: false, error: 'internal_error', message: err.message }, true);
+        throw err;
+      }
+    };
   }
 
   // IDs look like REF-301; the next one is the highest number + 1.
@@ -424,5 +471,82 @@ export function createTools(db, { now = () => new Date() } = {}) {
     }, 'Another request to resolve this escalation is in progress. Wait a moment and try again.');
   }
 
-  return { getCustomer, getOrder, getPayment, initiateRefund, escalateToHuman, listEscalations, resolveRefundApproval };
+  // Called directly by the harness (src/agent/repl.js), never by the model: whether a
+  // decision (step 14) gets logged isn't something the LLM should decide. Input is still
+  // validated, since an MCP call is an untrusted-input boundary regardless of who's calling.
+  function logDecision({ decision, amount, reason, needs_human } = {}) {
+    if (!DECISIONS.includes(decision)) {
+      return fail('invalid_decision', `decision must be one of: ${DECISIONS.join(', ')}.`);
+    }
+    if (!Number.isInteger(amount) || amount < 0) {
+      return fail('invalid_amount', 'amount must be a non-negative whole number.');
+    }
+    if (typeof reason !== 'string' || !reason.trim() || reason.length > MAX_TEXT) {
+      return fail('invalid_reason', `reason must be non-empty text of at most ${MAX_TEXT} characters.`);
+    }
+    if (typeof needs_human !== 'boolean') {
+      return fail('invalid_needs_human', 'needs_human must be true or false.');
+    }
+
+    const id = nextId('decision_log', 'DEC-', 1);
+    const at = now().toISOString();
+    insertDecisionLog.run(id, at, decision, amount, reason.trim(), needs_human ? 1 : 0);
+    return { ok: true, id, at };
+  }
+
+  function validateLogFilters({ since, tool_name, limit = 50 } = {}) {
+    if (since != null && (typeof since !== 'string' || Number.isNaN(Date.parse(since)))) {
+      return fail('invalid_since', 'since must be an ISO-8601 timestamp.');
+    }
+    if (tool_name != null && typeof tool_name !== 'string') {
+      return fail('invalid_tool_name', 'tool_name must be a string.');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      return fail('invalid_limit', 'limit must be a whole number between 1 and 200.');
+    }
+    return null;
+  }
+
+  // For a human reviewer: every tool call, by every consumer, oldest-filter-first.
+  function listToolCalls({ since, tool_name, limit = 50 } = {}) {
+    const invalid = validateLogFilters({ since, tool_name, limit });
+    if (invalid) return invalid;
+    const rows = listToolCallsStmt.all(since ?? null, since ?? null, tool_name ?? null, tool_name ?? null, limit);
+    return {
+      ok: true,
+      tool_calls: rows.map((r) => ({
+        id: r.id, at: r.at, tool_name: r.tool_name,
+        input: JSON.parse(r.input), output: JSON.parse(r.output), is_error: Boolean(r.is_error),
+      })),
+    };
+  }
+
+  // For a human reviewer: every structured decision the agent has logged.
+  function listDecisions({ since, limit = 50 } = {}) {
+    const invalid = validateLogFilters({ since, limit });
+    if (invalid) return invalid;
+    const rows = listDecisionsStmt.all(since ?? null, since ?? null, limit);
+    return {
+      ok: true,
+      decisions: rows.map((r) => ({
+        id: r.id, at: r.at, decision: r.decision, amount: r.amount, reason: r.reason, needs_human: Boolean(r.needs_human),
+      })),
+    };
+  }
+
+  // Maps each JS function to the snake_case name server.js registers it under, so
+  // tool_call_log.tool_name (and listToolCalls's tool_name filter) matches what a human
+  // reviewing the log actually sees in Claude Code or the MCP Inspector.
+  const MCP_NAMES = {
+    getCustomer: 'get_customer', getOrder: 'get_order', getPayment: 'get_payment',
+    initiateRefund: 'initiate_refund', escalateToHuman: 'escalate_to_human',
+    listEscalations: 'list_escalations', resolveRefundApproval: 'resolve_refund_approval',
+    logDecision: 'log_decision', listToolCalls: 'list_tool_calls', listDecisions: 'list_decisions',
+  };
+  return Object.fromEntries(
+    Object.entries({
+      getCustomer, getOrder, getPayment, initiateRefund, escalateToHuman,
+      listEscalations, resolveRefundApproval, logDecision, listToolCalls, listDecisions,
+    }).map(([key, fn]) => [key, audited(MCP_NAMES[key], fn)]),
+  );
 }

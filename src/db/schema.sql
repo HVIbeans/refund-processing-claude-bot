@@ -84,3 +84,26 @@ CREATE TABLE escalations (
   CHECK (customer_id IS NOT NULL OR contact_email IS NOT NULL),
   CHECK (type <> 'refund_approval' OR refund_id IS NOT NULL)
 );
+
+-- Audit trail (step 19). input/output are JSON. Logged for every tool call, by every
+-- consumer (the customer-facing agent and a human reviewer alike) - see src/tools.js's
+-- audited() wrapper.
+CREATE TABLE tool_call_log (
+  id        TEXT PRIMARY KEY,
+  at        TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  input     TEXT NOT NULL,
+  output    TEXT NOT NULL,
+  is_error  INTEGER NOT NULL CHECK (is_error IN (0, 1))
+);
+
+-- One row per structured decision (step 14). Written by src/agent/repl.js calling
+-- log_decision directly after chat.send() returns - never exposed to the model.
+CREATE TABLE decision_log (
+  id          TEXT PRIMARY KEY,
+  at          TEXT NOT NULL,
+  decision    TEXT NOT NULL CHECK (decision IN ('none', 'approved', 'partial', 'denied', 'escalated')),
+  amount      INTEGER NOT NULL CHECK (amount >= 0),
+  reason      TEXT NOT NULL,
+  needs_human INTEGER NOT NULL CHECK (needs_human IN (0, 1))
+);
