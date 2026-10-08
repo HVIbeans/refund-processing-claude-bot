@@ -86,5 +86,26 @@ export function createMcpServer(tools) {
     annotations: { readOnlyHint: false, destructiveHint: false },
   }, handle(tools.escalateToHuman));
 
+  // The next two are for a human reviewer, not the customer-facing agent (which never lists them).
+  server.registerTool('list_escalations', {
+    title: 'List escalations for a human to review',
+    description: 'List escalations (refund approvals, account issues, risk holds) by status, for a human reviewer.',
+    inputSchema: {
+      status: z.enum(['open', 'resolved']).optional().describe('Defaults to open'),
+    },
+    annotations: { readOnlyHint: true },
+  }, handle(tools.listEscalations));
+
+  server.registerTool('resolve_refund_approval', {
+    title: 'Approve or reject a pending refund',
+    description: 'A human approves or rejects a refund that initiate_refund deferred for being above the auto-approve limit. Only works on open refund_approval escalations.',
+    inputSchema: {
+      escalation_id: z.string().describe('The escalation ID, e.g. ESC-401'),
+      decision: z.enum(['approve', 'reject']).describe('Whether to approve or reject the pending refund'),
+      resolution_note: z.string().optional().describe('Optional note for the audit trail, e.g. why it was rejected'),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+  }, handle(tools.resolveRefundApproval));
+
   return server;
 }

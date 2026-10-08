@@ -9,6 +9,7 @@ import { POLICY, MAX_TEXT, formatInr } from './policy.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ESCALATION_TYPES = ['account', 'risk']; // refund_approval escalations are created by initiateRefund
+const RESOLUTION_DECISIONS = ['approve', 'reject'];
 
 const fail = (error, message, extra = {}) => ({ ok: false, error, message, ...extra });
 
@@ -63,6 +64,17 @@ export function createTools(db, { now = () => new Date() } = {}) {
     SELECT id, type, status, created_at FROM escalations
     WHERE status = 'open' AND type = ? AND customer_id IS ? AND contact_email IS ? AND order_id IS ?
   `);
+  const listEscalationsByStatus = db.prepare(`
+    SELECT e.id, e.type, e.contact_email, e.order_id, e.refund_id, e.summary, e.status, e.created_at, e.resolved_at, e.resolution_note,
+           c.name AS customer_name, c.tier AS customer_tier
+    FROM escalations e
+    LEFT JOIN customers c ON c.id = e.customer_id
+    WHERE e.status = ?
+    ORDER BY e.created_at
+  `);
+  const findEscalation = db.prepare('SELECT id, type, status, refund_id FROM escalations WHERE id = ?');
+  const updateRefundResolution = db.prepare('UPDATE refunds SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?');
+  const resolveEscalationRow = db.prepare("UPDATE escalations SET status = 'resolved', resolved_at = ?, resolution_note = ? WHERE id = ?");
 
   // IDs look like REF-301; the next one is the highest number + 1.
   const nextId = (table, prefix, first) => {
@@ -120,7 +132,11 @@ export function createTools(db, { now = () => new Date() } = {}) {
 
   function refundResult(refundId, replayed) {
     const r = findRefund.get(refundId);
-    const completed = r.status === 'completed';
+    const messages = {
+      completed: `Refund of ${formatInr(r.amount)} completed. It goes back to the ${r.brand} card ending ${r.last4}.`,
+      pending_approval: `Refund of ${formatInr(r.amount)} is above the agent's approval limit and is waiting for a human to approve it (${r.escalation_id}).`,
+      rejected: `Refund of ${formatInr(r.amount)} was reviewed and rejected.`,
+    };
     return {
       ok: true,
       replayed,
@@ -136,9 +152,7 @@ export function createTools(db, { now = () => new Date() } = {}) {
         refund_to: { brand: r.brand, last4: r.last4 },
       },
       escalation_id: r.escalation_id ?? null,
-      message: completed
-        ? `Refund of ${formatInr(r.amount)} completed. It goes back to the ${r.brand} card ending ${r.last4}.`
-        : `Refund of ${formatInr(r.amount)} is above the agent's approval limit and is waiting for a human to approve it (${r.escalation_id}).`,
+      message: messages[r.status],
     };
   }
 
@@ -324,5 +338,77 @@ export function createTools(db, { now = () => new Date() } = {}) {
     return { ok: true, already_open: false, verified: Boolean(customer), escalation: { id, type, status: 'open', created_at: at }, message };
   }
 
-  return { getCustomer, getOrder, getPayment, initiateRefund, escalateToHuman };
+  // For a human reviewer, not the customer-facing agent: lists escalations of every type
+  // (refund approvals, account issues, risk holds) so a human sees the full picture.
+  function listEscalations({ status = 'open' } = {}) {
+    if (!['open', 'resolved'].includes(status)) {
+      return fail('invalid_status', 'status must be one of: open, resolved.');
+    }
+    return {
+      ok: true,
+      escalations: listEscalationsByStatus.all(status).map((e) => ({
+        id: e.id,
+        type: e.type,
+        status: e.status,
+        created_at: e.created_at,
+        resolved_at: e.resolved_at,
+        resolution_note: e.resolution_note,
+        customer: e.customer_name ? { name: e.customer_name, tier: e.customer_tier } : null,
+        contact_email: e.contact_email,
+        order_id: e.order_id,
+        refund_id: e.refund_id,
+        summary: e.summary,
+      })),
+    };
+  }
+
+  // For a human reviewer only: approves or rejects a refund that initiateRefund deferred for
+  // being above the auto-approve limit. Never exposed to the customer-facing agent.
+  function resolveRefundApproval({ escalation_id, decision, resolution_note } = {}) {
+    if (typeof escalation_id !== 'string' || !escalation_id.trim()) {
+      return fail('invalid_escalation_id', 'escalation_id is required.');
+    }
+    if (!RESOLUTION_DECISIONS.includes(decision)) {
+      return fail('invalid_decision', `decision must be one of: ${RESOLUTION_DECISIONS.join(', ')}.`);
+    }
+    if (resolution_note != null && (typeof resolution_note !== 'string' || resolution_note.length > MAX_TEXT)) {
+      return fail('invalid_resolution_note', `resolution_note must be text of at most ${MAX_TEXT} characters.`);
+    }
+
+    const id = escalation_id.trim();
+    const escalation = findEscalation.get(id);
+    if (!escalation) return fail('escalation_not_found', 'No escalation with that id was found.');
+    if (escalation.type !== 'refund_approval') {
+      return fail('not_a_refund_approval', `This escalation is type "${escalation.type}"; resolve_refund_approval only handles refund_approval escalations.`);
+    }
+    if (escalation.status !== 'open') {
+      return fail('already_resolved', 'This escalation was already resolved.');
+    }
+
+    const refund = findRefund.get(escalation.refund_id);
+    if (!refund || refund.status !== 'pending_approval') {
+      return fail('refund_not_pending', 'This refund is no longer pending approval.');
+    }
+
+    const at = now().toISOString();
+    const note = resolution_note?.trim() || null;
+    const newStatus = decision === 'approve' ? 'completed' : 'rejected';
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      updateRefundResolution.run(newStatus, at, 'human', refund.id);
+      resolveEscalationRow.run(at, note, id);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+
+    return {
+      ...refundResult(refund.id, false),
+      decision,
+      escalation: { id, status: 'resolved', resolved_at: at, resolution_note: note },
+    };
+  }
+
+  return { getCustomer, getOrder, getPayment, initiateRefund, escalateToHuman, listEscalations, resolveRefundApproval };
 }

@@ -45,6 +45,11 @@ let showThinking = true;
 const usingRunner = process.env.ANTHROPIC_LOOP === 'runner';
 const createAgent = usingRunner ? createToolRunnerChat : createChat;
 
+// Step 17: these are for a human reviewer (via Claude Code's own MCP connection), never the
+// customer-facing agent - approving its own escalated refunds would defeat the point.
+const HUMAN_ONLY_TOOLS = new Set(['list_escalations', 'resolve_refund_approval']);
+const agentTools = mcp.tools.filter((t) => !HUMAN_ONLY_TOOLS.has(t.name));
+
 // The server's instructions go into the system prompt, as MCP clients usually do.
 const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
 const chat = createAgent({
@@ -53,7 +58,7 @@ const chat = createAgent({
   effort: supportsEffort(effort) ? effort : undefined,
   decide: true, // on by default in the REPL; toggle with /decision
   cache: true, // on by default in the REPL; toggle with /cache
-  tools: mcp.tools, callTool: mcp.callTool,
+  tools: agentTools, callTool: mcp.callTool,
   onText: (text) => emit('agent', text),
   onThinking: (text) => {
     if (showThinking) emit('thinking', text);
@@ -100,7 +105,7 @@ const thinkingLabel = () => {
 const effortLabel = () => chat.settings.effort ?? (support.effortLevels.length ? 'model default' : 'not supported');
 
 console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host} · loop: ${usingRunner ? 'tool runner (beta)' : 'manual'}`);
-console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${mcp.tools.length} tools`);
+console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${agentTools.length} tools`);
 console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} · decision: ${chat.settings.decide ? 'on' : 'off'} · cache: ${chat.settings.cache ? 'on' : 'off'} ${dim(`(capabilities from the ${support.source})`)}`);
 console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));
 console.log(dim('Commands: /tools, /effort [low|medium|high], /thinking (show/hide), /thinking on|off, /decision on|off, /cache on|off, /reset, /exit.\n'));
@@ -206,12 +211,12 @@ function showDecision({ decision, amount, reason, needs_human }) {
 // Lists the tools and what their definitions would add to each request, using the token counting
 // endpoint (free, but a real API call). The gateway might not support it.
 async function showTools() {
-  for (const t of mcp.tools) console.log(`  ${t.name}: ${t.description}`);
+  for (const t of agentTools) console.log(`  ${t.name}: ${t.description}`);
   try {
     const messages = [{ role: 'user', content: 'Hi' }];
     const [without, withTools] = await Promise.all([
       client.messages.countTokens({ model, system, messages }),
-      client.messages.countTokens({ model, system, messages, tools: mcp.tools }),
+      client.messages.countTokens({ model, system, messages, tools: agentTools }),
     ]);
     console.log(dim(`  (tool definitions: about ${withTools.input_tokens - without.input_tokens} input tokens per request)\n`));
   } catch (err) {

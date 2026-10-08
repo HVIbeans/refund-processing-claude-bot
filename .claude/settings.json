@@ -11,7 +11,8 @@
       "Bash(git add:*)",
       "mcp__refund-tools__get_customer",
       "mcp__refund-tools__get_order",
-      "mcp__refund-tools__get_payment"
+      "mcp__refund-tools__get_payment",
+      "mcp__refund-tools__list_escalations"
     ],
     "deny": [
       "Read(./.env)",

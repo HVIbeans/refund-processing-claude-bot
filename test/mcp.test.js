@@ -42,16 +42,19 @@ const callJson = async (name, args) => {
 };
 const refundCount = () => db.prepare('SELECT count(*) AS n FROM refunds').get().n;
 
-test('lists the five tools with descriptions, schemas and read-only hints', async () => {
+test('lists the seven tools with descriptions, schemas and read-only hints', async () => {
   const { tools } = await client.listTools();
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
-  assert.deepEqual(Object.keys(byName).sort(), ['escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'initiate_refund']);
+  assert.deepEqual(Object.keys(byName).sort(), [
+    'escalate_to_human', 'get_customer', 'get_order', 'get_payment',
+    'initiate_refund', 'list_escalations', 'resolve_refund_approval',
+  ]);
   for (const tool of tools) {
     assert.ok(tool.description, tool.name);
     assert.equal(tool.inputSchema.type, 'object', tool.name);
   }
-  for (const name of ['get_customer', 'get_order', 'get_payment']) assert.equal(byName[name].annotations.readOnlyHint, true, name);
-  for (const name of ['initiate_refund', 'escalate_to_human']) assert.equal(byName[name].annotations.readOnlyHint, false, name);
+  for (const name of ['get_customer', 'get_order', 'get_payment', 'list_escalations']) assert.equal(byName[name].annotations.readOnlyHint, true, name);
+  for (const name of ['initiate_refund', 'escalate_to_human', 'resolve_refund_approval']) assert.equal(byName[name].annotations.readOnlyHint, false, name);
   assert.deepEqual(byName.initiate_refund.inputSchema.properties.reason.enum, ['damaged', 'wrong_item', 'not_as_described']);
   assert.deepEqual(byName.initiate_refund.inputSchema.required.sort(), ['amount', 'card_last4', 'email', 'idempotency_key', 'order_id', 'reason']);
 });
@@ -90,4 +93,21 @@ test('input that fails the schema is rejected before the tool runs', async () =>
     assert.match(text, /Input validation error/);
   }
   assert.equal(refundCount(), 3);
+});
+
+test('list_escalations and resolve_refund_approval let a human review and resolve a pending refund', async () => {
+  const open = await callJson('list_escalations', {});
+  assert.equal(open.isError, false);
+  assert.ok(open.body.escalations.some((e) => e.id === 'ESC-401'));
+
+  const resolved = await callJson('resolve_refund_approval', { escalation_id: 'ESC-401', decision: 'approve' });
+  assert.equal(resolved.isError, false);
+  assert.equal(resolved.body.refund.status, 'completed');
+
+  const stillOpen = await callJson('list_escalations', { status: 'open' });
+  assert.equal(stillOpen.body.escalations.some((e) => e.id === 'ESC-401'), false);
+
+  const again = await callJson('resolve_refund_approval', { escalation_id: 'ESC-401', decision: 'approve' });
+  assert.equal(again.isError, true);
+  assert.equal(again.body.error, 'already_resolved');
 });

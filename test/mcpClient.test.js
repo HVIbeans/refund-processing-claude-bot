@@ -29,11 +29,12 @@ afterEach(async () => {
   db.close();
 });
 
-test('lists the server, its instructions and all five tools', () => {
+test('lists the server, its instructions and all seven tools', () => {
   assert.equal(mcp.server.name, 'refund-tools');
   assert.match(mcp.instructions, /Verify the customer first/);
   assert.deepEqual(mcp.tools.map((t) => t.name).sort(), [
-    'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'initiate_refund',
+    'escalate_to_human', 'get_customer', 'get_order', 'get_payment',
+    'initiate_refund', 'list_escalations', 'resolve_refund_approval',
   ]);
 });
 

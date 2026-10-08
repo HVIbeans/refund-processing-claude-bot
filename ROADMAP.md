@@ -28,7 +28,7 @@ Tick items off as you go (`- [x]`).
 - [x] 16. Replace the manual loop with the SDK's Tool Runner and compare
 
 ## Phase 3 — Production-shaped
-- [ ] 17. Human-in-the-loop approval above an amount threshold
+- [x] 17. Human-in-the-loop approval above an amount threshold
 - [ ] 18. Code-enforced guardrails in the MCP tools: refund ≤ amount paid, no duplicates, idempotency keys
 - [ ] 19. Audit log of every tool call and decision
 - [ ] 20. Error handling: tool failures, MCP server disconnects, API retries, rate limits

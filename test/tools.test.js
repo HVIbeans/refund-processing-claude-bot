@@ -249,3 +249,70 @@ describe('escalateToHuman', () => {
     assert.equal(tools.escalateToHuman({ ...base, order_id: 'ORD-5004' }).error, 'order_not_found');
   });
 });
+
+describe('listEscalations', () => {
+  test('lists the seeded pending refund approval under open, with customer context', () => {
+    const result = tools.listEscalations({ status: 'open' });
+    assert.equal(result.ok, true);
+    const esc = result.escalations.find((e) => e.id === 'ESC-401');
+    assert.ok(esc, 'ESC-401 should be open');
+    assert.equal(esc.type, 'refund_approval');
+    assert.equal(esc.refund_id, 'REF-303');
+    assert.equal(esc.order_id, 'ORD-5014');
+    assert.deepEqual(esc.customer, { name: 'Anita Desai', tier: 'standard' });
+    assert.match(esc.summary, /₹7,000/);
+  });
+
+  test('defaults to open, and resolved escalations move out of it', () => {
+    assert.equal(tools.listEscalations().escalations.some((e) => e.id === 'ESC-401'), true);
+    tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' });
+    assert.equal(tools.listEscalations({ status: 'open' }).escalations.some((e) => e.id === 'ESC-401'), false);
+    assert.equal(tools.listEscalations({ status: 'resolved' }).escalations.some((e) => e.id === 'ESC-401'), true);
+  });
+
+  test('rejects an invalid status', () => {
+    assert.equal(tools.listEscalations({ status: 'closed' }).error, 'invalid_status');
+  });
+});
+
+describe('resolveRefundApproval', () => {
+  test('approve completes the refund, resolved_by human, and resolves the escalation', () => {
+    const result = tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve', resolution_note: 'Manager sign-off' });
+    assert.equal(result.ok, true);
+    assert.equal(result.decision, 'approve');
+    assert.equal(result.refund.status, 'completed');
+    assert.equal(result.escalation.status, 'resolved');
+    assert.equal(result.escalation.resolution_note, 'Manager sign-off');
+
+    const refundRow = db.prepare('SELECT status, resolved_by FROM refunds WHERE id = ?').get('REF-303');
+    assert.deepEqual({ ...refundRow }, { status: 'completed', resolved_by: 'human' });
+    const escRow = db.prepare('SELECT status FROM escalations WHERE id = ?').get('ESC-401');
+    assert.deepEqual({ ...escRow }, { status: 'resolved' });
+  });
+
+  test('reject marks the refund rejected instead of completed', () => {
+    const result = tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'reject' });
+    assert.equal(result.refund.status, 'rejected');
+    const refundRow = db.prepare('SELECT status, resolved_by FROM refunds WHERE id = ?').get('REF-303');
+    assert.deepEqual({ ...refundRow }, { status: 'rejected', resolved_by: 'human' });
+  });
+
+  test('rejects an unknown escalation id', () => {
+    assert.equal(tools.resolveRefundApproval({ escalation_id: 'ESC-999', decision: 'approve' }).error, 'escalation_not_found');
+  });
+
+  test('rejects an escalation that is not a refund approval', () => {
+    const { escalation } = tools.escalateToHuman({ ...rahul, type: 'account', summary: 'Account question.' });
+    assert.equal(tools.resolveRefundApproval({ escalation_id: escalation.id, decision: 'approve' }).error, 'not_a_refund_approval');
+  });
+
+  test('rejects an escalation that was already resolved', () => {
+    tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' });
+    assert.equal(tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' }).error, 'already_resolved');
+  });
+
+  test('rejects a bad decision or an overlong resolution_note', () => {
+    assert.equal(tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'maybe' }).error, 'invalid_decision');
+    assert.equal(tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve', resolution_note: 'x'.repeat(2001) }).error, 'invalid_resolution_note');
+  });
+});
