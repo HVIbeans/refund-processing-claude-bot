@@ -31,28 +31,68 @@ export function stdioTransport() {
   });
 }
 
-// The transport is a parameter so tests can pass an in-memory pair instead of a subprocess.
-export async function connectMcp(transport) {
+// Connects one Client to one transport and tracks whether it's still alive, via the SDK's
+// own onclose/onerror hooks (confirmed: onclose fires synchronously when the other side
+// closes, and a call afterward throws "Not connected" rather than hanging).
+async function connectOnce(transport) {
   const client = new Client({ name: 'refund-agent', version: pkg.version });
+  let connected = true;
+  client.onclose = () => { connected = false; };
+  client.onerror = () => { connected = false; };
   await client.connect(transport);
+  return { client, isConnected: () => connected };
+}
+
+// The transport is a parameter so tests can pass an in-memory pair instead of a subprocess.
+// `reconnect`, if given, is a factory (e.g. stdioTransport itself) called again to build a
+// fresh transport if the connection is later found dead - e.g. the server process crashed.
+// Not used for the *initial* connect, which still fails immediately on startup as before.
+export async function connectMcp(transport, { reconnect } = {}) {
+  let { client, isConnected } = await connectOnce(transport);
+  let mcpTools;
   try {
-    const { tools: mcpTools } = await client.listTools();
-    return {
-      client,
-      server: client.getServerVersion(),
-      instructions: client.getInstructions(),
-      mcpTools,
-      tools: mcpTools.map(toClaudeTool),
-      // Runs a tool for the agent loop. Policy failures and invalid input come back as
-      // isError results (not exceptions); only a protocol or connection failure throws.
-      callTool: async (name, input) => {
-        const result = await client.callTool({ name, arguments: input });
-        return { text: resultText(result), isError: Boolean(result.isError) };
-      },
-      close: () => client.close(),
-    };
+    ({ tools: mcpTools } = await client.listTools());
   } catch (err) {
     await client.close();
     throw err;
   }
+  const server = client.getServerVersion();
+  const instructions = client.getInstructions();
+
+  async function reestablish() {
+    if (!reconnect) {
+      throw new Error('The refund-tools MCP connection was lost and no reconnect transport is configured.');
+    }
+    ({ client, isConnected } = await connectOnce(await reconnect()));
+  }
+
+  async function attemptCall(name, input) {
+    const result = await client.callTool({ name, arguments: input });
+    return { text: resultText(result), isError: Boolean(result.isError) };
+  }
+
+  // Runs a tool for the agent loop. Policy failures and invalid input come back as isError
+  // results (not exceptions); only a protocol or connection failure throws. A thrown error
+  // only triggers a reconnect-and-retry when the connection is actually the problem (isError
+  // results never reach the catch block at all, since they resolve normally).
+  async function callTool(name, input) {
+    if (!isConnected()) await reestablish();
+    try {
+      return await attemptCall(name, input);
+    } catch (err) {
+      if (isConnected() || !reconnect) throw err;
+      await reestablish();
+      return await attemptCall(name, input);
+    }
+  }
+
+  return {
+    get client() { return client; }, // a getter, not a snapshot: reestablish() reassigns client
+    server,
+    instructions,
+    mcpTools,
+    tools: mcpTools.map(toClaudeTool),
+    callTool,
+    close: () => client.close(),
+  };
 }

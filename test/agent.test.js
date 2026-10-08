@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import Anthropic from '@anthropic-ai/sdk';
 import { buildSystemPrompt } from '../src/agent/systemPrompt.js';
 import { createChat } from '../src/agent/chat.js';
 import { DECISION_TOOL } from '../src/agent/decision.js';
@@ -29,10 +30,11 @@ function fakeClient(replies) {
           async finalMessage() {
             if (next instanceof Error) throw next;
             if (next?.failAfter) {
-              // Some text arrives, then the connection drops.
+              // Some text arrives, then the connection drops. failError lets a test pick which
+              // error (e.g. an APIConnectionError, to exercise the one-retry path).
               emit('streamEvent', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
               streamText(next.failAfter);
-              throw new Error('stream interrupted');
+              throw next.failError ?? new Error('stream interrupted');
             }
             const message = { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, ...next };
             message.content.forEach((block, index) => {
@@ -582,5 +584,42 @@ describe('createChat prompt caching', () => {
     chat.setCache(true);
     await chat.send('Again');
     assert.notEqual(typeof client.requests[1].system, 'string');
+  });
+});
+
+describe('createChat connection retry', () => {
+  test('retries once on an APIConnectionError and succeeds', async () => {
+    const client = fakeClient([new Anthropic.APIConnectionError({ message: 'network down' }), say('Hello!')]);
+    const result = await createChat({ client }).send('Hi');
+    assert.equal(result.text, 'Hello!');
+    assert.equal(client.requests.length, 2);
+  });
+
+  test('gives up and rolls back after a second APIConnectionError in the same round', async () => {
+    const client = fakeClient([
+      new Anthropic.APIConnectionError({ message: 'still down' }),
+      new Anthropic.APIConnectionError({ message: 'still down' }),
+    ]);
+    const chat = createChat({ client });
+    await assert.rejects(chat.send('Hi'), /still down/);
+    assert.equal(client.requests.length, 2);
+    assert.equal(chat.history.length, 0); // rolled back, safe to retry later
+  });
+
+  test('does not retry a non-connection error (e.g. a rate limit or auth failure)', async () => {
+    const client = fakeClient([new Error('rate limited')]);
+    await assert.rejects(createChat({ client }).send('Hi'), /rate limited/);
+    assert.equal(client.requests.length, 1);
+  });
+
+  test('withdraws any partial output streamed before the dropped connection, then retries cleanly', async () => {
+    let discarded = 0;
+    const client = fakeClient([
+      { failAfter: 'Your refund is', failError: new Anthropic.APIConnectionError({ message: 'dropped' }) },
+      say('All set.'),
+    ]);
+    const result = await createChat({ client, onDiscard: () => discarded++ }).send('Hi');
+    assert.equal(discarded, 1);
+    assert.equal(result.text, 'All set.');
   });
 });

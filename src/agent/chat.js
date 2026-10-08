@@ -2,6 +2,7 @@
 // Each API call is streamed, so the caller can show the reply as it's written.
 // The API is stateless: every request sends the system prompt, the tools and the whole history,
 // and we append each reply (and each round of tool results) to that history.
+import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemPrompt } from "./systemPrompt.js";
 import { extractDecision } from "./decision.js";
 
@@ -137,41 +138,53 @@ export function createChat({
       let response;
       let streamed = false; // has any of this call's text or thinking been shown?
       let textStreamed = false;
-      try {
-        // Streamed: text pieces go to onText as they arrive, and finalMessage() resolves with the
-        // same complete Message that messages.create() returns (content, stop_reason, usage).
-        // Tool inputs arrive as partial JSON too, but we only run tools from the finished message.
-        const stream = client.messages.stream({
-          model,
-          max_tokens: maxTokens,
-          system: cachedSystem(),
-          messages: history,
-          ...(tools.length > 0 && { tools: cachedTools() }),
-          // Out of rounds: the model must answer in text with what it has.
-          ...(tools.length > 0 && lastRound && { tool_choice: { type: "none" } }),
-          // Both are generally available on Sonnet 4.6: no beta headers needed.
-          ...(settings.thinking && { thinking: { type: "adaptive" } }),
-          ...(settings.effort && { output_config: { effort: settings.effort } }),
-        });
-        // Separate text blocks within one reply get a line break between them, as textOf() does.
-        stream.on("streamEvent", (event) => {
-          if (event.type === "content_block_start" && event.content_block.type === "text" && textStreamed) {
-            notify(onText, "\n");
+      // One extra automatic retry for a dropped connection specifically: chat.js already
+      // rolls back to a safe state on failure, so a retry here is known-safe. Not for a rate
+      // limit, an auth failure or any other APIError - those aren't fixed by retrying blindly,
+      // and the SDK itself already retries 429/5xx/connection errors internally before this.
+      for (let attempt = 1; ; attempt++) {
+        streamed = textStreamed = false;
+        try {
+          // Streamed: text pieces go to onText as they arrive, and finalMessage() resolves with the
+          // same complete Message that messages.create() returns (content, stop_reason, usage).
+          // Tool inputs arrive as partial JSON too, but we only run tools from the finished message.
+          const stream = client.messages.stream({
+            model,
+            max_tokens: maxTokens,
+            system: cachedSystem(),
+            messages: history,
+            ...(tools.length > 0 && { tools: cachedTools() }),
+            // Out of rounds: the model must answer in text with what it has.
+            ...(tools.length > 0 && lastRound && { tool_choice: { type: "none" } }),
+            // Both are generally available on Sonnet 4.6: no beta headers needed.
+            ...(settings.thinking && { thinking: { type: "adaptive" } }),
+            ...(settings.effort && { output_config: { effort: settings.effort } }),
+          });
+          // Separate text blocks within one reply get a line break between them, as textOf() does.
+          stream.on("streamEvent", (event) => {
+            if (event.type === "content_block_start" && event.content_block.type === "text" && textStreamed) {
+              notify(onText, "\n");
+            }
+          });
+          stream.on("text", (delta) => {
+            streamed = textStreamed = true;
+            notify(onText, delta);
+          });
+          stream.on("thinking", (delta) => {
+            streamed = true;
+            notify(onThinking, delta);
+          });
+          response = await stream.finalMessage(); // rejects on an API error or a dropped connection
+          break;
+        } catch (err) {
+          if (attempt < 2 && err instanceof Anthropic.APIConnectionError) {
+            if (streamed) notify(onDiscard); // withdraw any partial output before quietly retrying
+            continue;
           }
-        });
-        stream.on("text", (delta) => {
-          streamed = textStreamed = true;
-          notify(onText, delta);
-        });
-        stream.on("thinking", (delta) => {
-          streamed = true;
-          notify(onThinking, delta);
-        });
-        response = await stream.finalMessage(); // rejects on an API error or a dropped connection
-      } catch (err) {
-        rollback(); // so a retry doesn't send the user's text twice
-        if (streamed) notify(onDiscard);
-        throw err;
+          rollback(); // so a retry doesn't send the user's text twice
+          if (streamed) notify(onDiscard);
+          throw err;
+        }
       }
       addUsage(usage, response.usage);
       calls += 1;

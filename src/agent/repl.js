@@ -26,9 +26,11 @@ const client = new Anthropic();
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 
 // Start the MCP server as a child process and list its tools. The agent reaches data only through them.
+// If it dies mid-conversation, callTool transparently respawns it (stdioTransport passed again) and
+// retries the in-flight call once - see mcpClient.js.
 let mcp;
 try {
-  mcp = await connectMcp(stdioTransport());
+  mcp = await connectMcp(stdioTransport(), { reconnect: stdioTransport });
 } catch (err) {
   console.error(`Could not start the refund-tools MCP server: ${err.message}`);
   process.exit(1);

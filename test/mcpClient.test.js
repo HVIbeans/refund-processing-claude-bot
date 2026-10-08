@@ -78,3 +78,44 @@ test('calls fail after close', async () => {
   await mcp.close();
   await assert.rejects(mcp.client.listTools());
 });
+
+test('callTool only reconnects on a lost connection, not a normal tool error, and retries once reconnected', async () => {
+  const priya = { email: 'priya.shah@example.com', card_last4: '4242' };
+
+  // A fresh server+transport pair, standing in for a respawned `node src/mcp/stdio.js`.
+  async function makePair() {
+    const freshServer = createMcpServer(createTools(db));
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await freshServer.connect(serverTransport);
+    return { clientTransport, freshServer };
+  }
+
+  let reconnectCalls = 0;
+  const first = await makePair();
+  const reconnecting = await connectMcp(first.clientTransport, {
+    reconnect: async () => {
+      reconnectCalls += 1;
+      return (await makePair()).clientTransport;
+    },
+  });
+
+  // A normal tool-level error doesn't mean the connection is lost.
+  const bad = await reconnecting.callTool('initiate_refund', {
+    ...priya, order_id: 'ORD-5001', amount: 100, reason: 'changed_mind', idempotency_key: 'k1',
+  });
+  assert.equal(bad.isError, true);
+  assert.equal(reconnectCalls, 0);
+
+  // Simulate the server process dying; the next call should transparently reconnect and succeed.
+  const staleClient = reconnecting.client;
+  await first.freshServer.close();
+  const ok = await reconnecting.callTool('get_customer', priya);
+  assert.equal(ok.isError, false);
+  assert.equal(reconnectCalls, 1);
+
+  // .client is a getter, not a one-time snapshot: it must reflect the new connection too.
+  assert.notEqual(reconnecting.client, staleClient);
+  await assert.doesNotReject(reconnecting.client.listTools());
+
+  await reconnecting.close();
+});
