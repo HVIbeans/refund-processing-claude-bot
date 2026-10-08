@@ -29,7 +29,7 @@ Tick items off as you go (`- [x]`).
 
 ## Phase 3 — Production-shaped
 - [x] 17. Human-in-the-loop approval above an amount threshold
-- [ ] 18. Code-enforced guardrails in the MCP tools: refund ≤ amount paid, no duplicates, idempotency keys
+- [x] 18. Code-enforced guardrails in the MCP tools: refund ≤ amount paid, no duplicates, idempotency keys
 - [ ] 19. Audit log of every tool call and decision
 - [ ] 20. Error handling: tool failures, MCP server disconnects, API retries, rate limits
 

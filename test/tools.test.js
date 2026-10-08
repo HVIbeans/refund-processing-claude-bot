@@ -1,5 +1,8 @@
-import { beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { applySchema, openDb } from '../src/db/index.js';
 import { seed } from '../src/db/seed.js';
 import { createTools } from '../src/tools.js';
@@ -314,5 +317,43 @@ describe('resolveRefundApproval', () => {
   test('rejects a bad decision or an overlong resolution_note', () => {
     assert.equal(tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'maybe' }).error, 'invalid_decision');
     assert.equal(tools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve', resolution_note: 'x'.repeat(2001) }).error, 'invalid_resolution_note');
+  });
+});
+
+// :memory: is private per connection, so these use a real temp file - two separate connections
+// to the same DB, exactly like two separate `node src/mcp/stdio.js` processes would be.
+describe('concurrent writes', () => {
+  let dir, dbA, dbB, toolsB;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'refund-tools-test-'));
+    const path = join(dir, 'refunds.db');
+    dbA = openDb(path);
+    applySchema(dbA);
+    seed(dbA, today);
+    dbB = openDb(path);
+    toolsB = createTools(dbB, { now: () => today });
+  });
+
+  afterEach(() => {
+    dbA.close();
+    dbB.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('initiateRefund returns try_again when another connection holds the write lock', () => {
+    dbA.exec('BEGIN IMMEDIATE'); // simulates another in-flight request mid-transaction
+    const args = { ...priya, order_id: 'ORD-5001', amount: 500, reason: 'damaged', idempotency_key: 'concurrent-1' };
+    assert.equal(toolsB.initiateRefund(args).error, 'try_again');
+    dbA.exec('ROLLBACK');
+    // Confirms the lock was really the cause, not a genuine rejection: released, the same call succeeds.
+    assert.equal(toolsB.initiateRefund(args).ok, true);
+  });
+
+  test('resolveRefundApproval returns try_again when another connection holds the write lock', () => {
+    dbA.exec('BEGIN IMMEDIATE');
+    assert.equal(toolsB.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' }).error, 'try_again');
+    dbA.exec('ROLLBACK');
+    assert.equal(toolsB.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' }).ok, true);
   });
 });

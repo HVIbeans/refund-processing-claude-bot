@@ -86,6 +86,27 @@ test('a reused idempotency key is rejected', () => {
   );
 });
 
+test('a trigger rejects a refund that would push the payment total over its amount, even via raw SQL', () => {
+  // PAY-9014 (ORD-5014, ₹9,000) already has REF-303 pending_approval for ₹7,000; only ₹2,000 is left.
+  assert.throws(
+    () => db.prepare(`
+      INSERT INTO refunds (id, payment_id, amount, reason, status, idempotency_key, requested_at, resolved_at, resolved_by)
+      VALUES ('REF-999', 'PAY-9014', 3000, 'damaged', 'completed', 'raw-sql-test', 'now', 'now', 'agent')
+    `).run(),
+    (err) => err.errcode === 1811 && /refund total exceeds payment amount/.test(err.message),
+  );
+});
+
+test('the trigger ignores rejected refunds when summing the committed total', () => {
+  // REF-301 (PAY-9006, already completed for ₹3,000 on an ₹8,000 payment) leaves ₹5,000 refundable;
+  // rejecting a further ₹4,000 request must free that amount back up for the next one.
+  db.prepare("UPDATE refunds SET status = 'rejected' WHERE id = 'REF-301'").run();
+  assert.doesNotThrow(() => db.prepare(`
+    INSERT INTO refunds (id, payment_id, amount, reason, status, idempotency_key, requested_at, resolved_at, resolved_by)
+    VALUES ('REF-998', 'PAY-9006', 7999, 'damaged', 'completed', 'raw-sql-test-2', 'now', 'now', 'agent')
+  `).run());
+});
+
 test('formatInr shows whole rupees', () => {
   assert.equal(formatInr(3_499), '₹3,499');
   assert.equal(formatInr(42_000), '₹42,000');

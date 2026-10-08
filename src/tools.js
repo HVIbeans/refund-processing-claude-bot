@@ -21,6 +21,11 @@ const notVerified = () =>
 // The same answer for a missing order and someone else's order.
 const orderNotFound = () => fail('order_not_found', 'No order with that ID was found for this customer.');
 
+// SQLITE_BUSY (another connection holds the write lock) or SQLITE_CONSTRAINT_TRIGGER (the
+// refund_total_guard trigger fired because a concurrent writer committed between this call's
+// eligibility check and its own BEGIN IMMEDIATE). Both mean "retry", not "something is broken".
+const isRetryable = (err) => err?.errcode === 5 || err?.errcode === 1811;
+
 export function createTools(db, { now = () => new Date() } = {}) {
   const findCustomer = db.prepare(`
     SELECT c.id, c.name, c.email, c.status, c.tier FROM customers c
@@ -75,6 +80,26 @@ export function createTools(db, { now = () => new Date() } = {}) {
   const findEscalation = db.prepare('SELECT id, type, status, refund_id FROM escalations WHERE id = ?');
   const updateRefundResolution = db.prepare('UPDATE refunds SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?');
   const resolveEscalationRow = db.prepare("UPDATE escalations SET status = 'resolved', resolved_at = ?, resolution_note = ? WHERE id = ?");
+
+  // Runs fn() inside a write transaction, translating lock contention or the DB's own
+  // refund_total_guard trigger into a stable { error: 'try_again' } instead of a raw exception.
+  function inTransaction(fn, retryMessage) {
+    try {
+      db.exec('BEGIN IMMEDIATE');
+    } catch (err) {
+      if (isRetryable(err)) return fail('try_again', retryMessage);
+      throw err;
+    }
+    try {
+      const result = fn();
+      db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      db.exec('ROLLBACK');
+      if (isRetryable(err)) return fail('try_again', retryMessage);
+      throw err;
+    }
+  }
 
   // IDs look like REF-301; the next one is the highest number + 1.
   const nextId = (table, prefix, first) => {
@@ -279,8 +304,7 @@ export function createTools(db, { now = () => new Date() } = {}) {
 
     const refundId = nextId('refunds', 'REF-', 301);
     const at = now().toISOString();
-    db.exec('BEGIN IMMEDIATE');
-    try {
+    return inTransaction(() => {
       insertRefund.run(
         refundId, order.payment_id, amount, reason, reason_details ?? null,
         needsApproval ? 'pending_approval' : 'completed', key, at,
@@ -293,12 +317,8 @@ export function createTools(db, { now = () => new Date() } = {}) {
           `Refunds on this order would total ${formatInr(runningTotal)}, above the ${formatInr(limit)} ${customer.tier} limit.`;
         insertEscalation.run(nextId('escalations', 'ESC-', 401), 'refund_approval', customer.id, null, order.id, refundId, summary, at);
       }
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
-    return refundResult(refundId, false);
+      return refundResult(refundId, false);
+    }, 'Another refund request for this order is in progress. Retry with the same idempotency_key.');
   }
 
   // For account requests and risk cases. Works for unverified customers too: the escalation is then
@@ -393,21 +413,15 @@ export function createTools(db, { now = () => new Date() } = {}) {
     const at = now().toISOString();
     const note = resolution_note?.trim() || null;
     const newStatus = decision === 'approve' ? 'completed' : 'rejected';
-    db.exec('BEGIN IMMEDIATE');
-    try {
+    return inTransaction(() => {
       updateRefundResolution.run(newStatus, at, 'human', refund.id);
       resolveEscalationRow.run(at, note, id);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
-
-    return {
-      ...refundResult(refund.id, false),
-      decision,
-      escalation: { id, status: 'resolved', resolved_at: at, resolution_note: note },
-    };
+      return {
+        ...refundResult(refund.id, false),
+        decision,
+        escalation: { id, status: 'resolved', resolved_at: at, resolution_note: note },
+      };
+    }, 'Another request to resolve this escalation is in progress. Wait a moment and try again.');
   }
 
   return { getCustomer, getOrder, getPayment, initiateRefund, escalateToHuman, listEscalations, resolveRefundApproval };

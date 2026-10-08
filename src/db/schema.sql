@@ -57,6 +57,18 @@ CREATE TABLE refunds (
   CHECK ((status = 'pending_approval') = (resolved_at IS NULL))
 );
 
+-- Backstop against a bug (or a race between concurrent writers) over-refunding a payment.
+-- UPDATE isn't guarded: resolving an existing refund never increases the committed total
+-- (approving keeps the same amount; rejecting removes it, since it's excluded below).
+CREATE TRIGGER refund_total_guard
+BEFORE INSERT ON refunds
+WHEN (
+  SELECT COALESCE(SUM(amount), 0) FROM refunds WHERE payment_id = NEW.payment_id AND status <> 'rejected'
+) + NEW.amount > (SELECT amount FROM payments WHERE id = NEW.payment_id)
+BEGIN
+  SELECT RAISE(ABORT, 'refund total exceeds payment amount');
+END;
+
 CREATE TABLE escalations (
   id              TEXT PRIMARY KEY,
   type            TEXT NOT NULL CHECK (type IN ('refund_approval', 'account', 'risk')),
