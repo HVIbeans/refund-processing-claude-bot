@@ -34,7 +34,7 @@ Tick items off as you go (`- [x]`).
 - [x] 20. Error handling: tool failures, MCP server disconnects, API retries, rate limits
 
 ## Phase 4 — Claude Code power features
-- [ ] 21. **Hooks** (e.g. `PreToolUse` protecting the policy file, `PostToolUse` running tests)
+- [x] 21. **Hooks** (e.g. `PreToolUse` protecting the policy file, `PostToolUse` running tests)
 - [ ] 22. Custom **subagents** in `.claude/agents/` (policy-reviewer, test-writer)
 - [ ] 23. **Skills / slash commands** (e.g. `/new-test-scenario`)
 - [ ] 24. Run `/security-review` on the refund code

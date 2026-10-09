@@ -83,3 +83,12 @@ Update this section when the real structure differs from the plan.
 A `UserPromptSubmit` hook (`.claude/hooks/prompt-coach.js`) reviews each user prompt in a detached background `claude -p` run, using the instructions in `.claude/agents/prompt-coach.md`. Reviews are appended to `.claude/prompt-coach/feedback.md` (git-ignored). The hook prints nothing on purpose, because a `UserPromptSubmit` hook's stdout is added to the main session's context.
 
 The server's `/prompt-feedback` page shows the log live. `src/promptFeedback.js` parses the markdown log, so if you change the review format in the agent file, update the parser and its tests too.
+
+## Dev-safety hooks (step 21)
+
+Two more hooks, same plain-Node-ESM-script shape as `prompt-coach.js`, registered in `.claude/settings.json` under `PreToolUse`/`PostToolUse` with matcher `Edit|Write`:
+
+- **`.claude/hooks/protect-policy.js`:** on an edit to `src/policy.js`, prints `hookSpecificOutput: { permissionDecision: "ask", ... }` so it always asks for confirmation — even under `acceptEdits`/auto mode — rather than hard-blocking. `src/policy.js` is the single source of truth for the refund policy, so it gets the same "a human must consciously approve this" treatment as a refund above the auto-approve limit (step 17), without making a genuinely-wanted policy change require editing the hook first. No match on the file path: no output at all, so the hook expresses no opinion.
+- **`.claude/hooks/run-tests.js`:** on an edit to a `.js`/`.sql` file under `src/` or `test/`, runs `npm test` and, on failure, prints `{ decision: "block", reason: "..." }` so the failure lands back in context in the same turn — automating the "run tests after changes" discipline this project already follows by hand. Doc-only edits (`CLAUDE.md`, `ROADMAP.md`, ...) are skipped before `npm test` ever runs. Silent on success, same as a passing CI check needs no comment. Uses a single command string with `spawnSync(..., { shell: true })` rather than a separate `args` array, to avoid Node's `DEP0190` deprecation warning.
+
+Both were verified against the real hook mechanism (not just a manual pipe-test): `run-tests.js` via a temporary sentinel-file write proving it actually fires per `Edit` call, `protect-policy.js` by attempting a real edit to `src/policy.js` and confirming a permission prompt appears.
