@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import Anthropic from '@anthropic-ai/sdk';
 import { DEFAULT_MODEL, createChat } from './chat.js';
 import { createToolRunnerChat } from './toolRunnerChat.js';
+import { createSdkChat } from './sdkChat.js';
 import { connectMcp, stdioTransport } from './mcpClient.js';
 import { modelSupport } from './capabilities.js';
 import { buildSystemPrompt } from './systemPrompt.js';
@@ -43,9 +44,18 @@ const supportsEffort = (level) => support.effortLevels.includes(level);
 // Only controls what's printed: hidden thinking is still generated, kept in the history and billed.
 let showThinking = true;
 
-// Roadmap step 16: compare the hand-written loop against the SDK's beta Tool Runner.
-const usingRunner = process.env.ANTHROPIC_LOOP === 'runner';
-const createAgent = usingRunner ? createToolRunnerChat : createChat;
+// Roadmap steps 16 and 25: compare the hand-written loop against the SDK's beta Tool Runner
+// (ANTHROPIC_LOOP=runner) and the Claude Agent SDK (ANTHROPIC_LOOP=sdk).
+const LOOPS = {
+  manual: { create: createChat, label: 'manual' },
+  runner: { create: createToolRunnerChat, label: 'tool runner (beta)' },
+  sdk: { create: createSdkChat, label: 'Claude Agent SDK' },
+};
+const loop = LOOPS[process.env.ANTHROPIC_LOOP || 'manual'];
+if (!loop) {
+  console.error(`ANTHROPIC_LOOP must be one of ${Object.keys(LOOPS).join(', ')} (got "${process.env.ANTHROPIC_LOOP}").`);
+  process.exit(1);
+}
 
 // log_decision is harness-only: called directly below, never by the model (whether a decision
 // gets logged isn't the model's call). The reviewer tools (resolve_refund_approval and the like)
@@ -55,8 +65,9 @@ const NOT_FOR_AGENT_TOOLS = new Set(['log_decision']);
 const agentTools = mcp.tools.filter((t) => !NOT_FOR_AGENT_TOOLS.has(t.name));
 
 // The server's instructions go into the system prompt, as MCP clients usually do.
-const system = buildSystemPrompt(POLICY, { toolInstructions: mcp.instructions });
-const chat = createAgent({
+// The Agent SDK adds them itself (as a system reminder), so it gets the prompt without them.
+const system = buildSystemPrompt(POLICY, { toolInstructions: loop === LOOPS.sdk ? undefined : mcp.instructions });
+const chat = loop.create({
   client, model, system,
   thinking: support.adaptiveThinking,
   effort: supportsEffort(effort) ? effort : undefined,
@@ -68,6 +79,9 @@ const chat = createAgent({
     if (showThinking) emit('thinking', text);
   },
   onToolCall: showToolCall, onDiscard: withdraw,
+  // Agent SDK only: it starts its own copy of the server, so it must be told what to hide.
+  hiddenToolNames: [...NOT_FOR_AGENT_TOOLS],
+  onInit: showInit,
 });
 
 // Streamed text is written as it arrives. Each stretch starts with its prefix, `thinking> ` (dim)
@@ -108,7 +122,7 @@ const thinkingLabel = () => {
 };
 const effortLabel = () => chat.settings.effort ?? (support.effortLevels.length ? 'model default' : 'not supported');
 
-console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host} · loop: ${usingRunner ? 'tool runner (beta)' : 'manual'}`);
+console.log(`Refund agent · model ${model} · endpoint ${new URL(client.baseURL).host} · loop: ${loop.label}`);
 console.log(`Connected to ${mcp.server.name} v${mcp.server.version} · ${agentTools.length} tools`);
 console.log(`Thinking: ${thinkingLabel()} · effort: ${effortLabel()} · decision: ${chat.settings.decide ? 'on' : 'off'} · cache: ${chat.settings.cache ? 'on' : 'off'} ${dim(`(capabilities from the ${support.source})`)}`);
 console.log(dim('Tools are live: refunds change data/refunds.db (npm run db:reset undoes them).'));
@@ -160,7 +174,7 @@ for await (const raw of rl) {
     turnStart = true;
     shown = false;
     try {
-      const { text, fallback, stopReason, usage, calls, decision } = await chat.send(line);
+      const { text, fallback, stopReason, usage, calls, decision, costUsd } = await chat.send(line);
       if (fallback) {
         // Our own reply (refusal, empty or cut-off tool call): it wasn't streamed.
         endLine();
@@ -176,8 +190,10 @@ for await (const raw of rl) {
       // normal input price; a cache read costs ~10% of it - this is where the savings become visible.
       const cacheRead = usage.cache_read_input_tokens;
       const cacheWrite = usage.cache_creation_input_tokens;
+      // costUsd: the Agent SDK's running estimate for the whole conversation, not this turn.
+      const costPart = costUsd !== undefined ? ` · conversation so far ~$${costUsd.toFixed(4)}` : '';
       const cachePart = cacheRead || cacheWrite ? ` · cache: ${n(cacheRead)} read / ${n(cacheWrite)} write` : '';
-      console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out${cachePart} · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}]\n`));
+      console.log(dim(`[${n(usage.input_tokens)} in / ${n(usage.output_tokens)} out${cachePart} · ${calls} API call${calls > 1 ? 's' : ''} · ${stopReason}${costPart}]\n`));
     } catch (err) {
       endLine(); // the error may arrive mid-reply
       console.error(`\n${describeError(err)}\n`);
@@ -186,6 +202,7 @@ for await (const raw of rl) {
   if (!closed) rl.prompt(); // input may have ended (Ctrl+D or piped input)
 }
 rl.close();
+chat.close?.(); // the Agent SDK's Claude Code process (and the MCP server it started)
 await mcp.close(); // ends the server process
 
 function n(x = 0) {
@@ -206,6 +223,15 @@ function showToolCall({ name, input, isError, text }) {
   startBlock();
   console.log(dim(`  ↳ ${name} ${JSON.stringify(input)} → ${outcome}`));
   shown = false; // that call's output is kept; a later discard only concerns the next call
+}
+
+// Agent SDK only: what the Claude Code process says the agent really has, from its system/init
+// message at the start of each conversation. It should be the customer tools and nothing else.
+function showInit({ tools, mcpServers }) {
+  endLine();
+  startBlock();
+  const servers = mcpServers.map((s) => `${s.name} (${s.status})`).join(', ');
+  console.log(dim(`  ↳ agent SDK session · ${tools.length} tools: ${tools.join(', ')} · MCP: ${servers}`));
 }
 
 // The structured decision extracted after the reply (step 14): a forced second API call, so it

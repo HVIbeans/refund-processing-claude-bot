@@ -37,10 +37,10 @@ Tick items off as you go (`- [x]`).
 - [x] 21. **Hooks** (e.g. `PreToolUse` protecting the policy file, `PostToolUse` running tests)
 - [x] 22. Custom **subagents** in `.claude/agents/` (policy-reviewer)
 - [x] 23. **Skills / slash commands** (`/next-step`; later ideas: `/new-test-scenario`, `/sync`, `/review-rules`)
-- [ ] 24. Run `/security-review` on the refund code
+- [-] 24. Run `/security-review` on the refund code — *skipped for now.* Notes for later: it reviews only the diff between the branch and origin's default branch (so only unpushed commits), and needs `git remote set-head origin --auto` first (`origin/HEAD` isn't set here). Planned test: plant a SQL injection and an existence leak on a throwaway branch, and compare what it catches with `policy-reviewer`.
 
 ## Phase 5 — Agent SDK & multi-agent
-- [ ] 25. Rebuild on the **Claude Agent SDK** (it can use the same MCP server)
+- [x] 25. Rebuild on the **Claude Agent SDK** (it can use the same MCP server): `sdkChat.js`, `ANTHROPIC_LOOP=sdk`
 - [ ] 26. Multi-agent: triage → refund specialist → fraud checker, with an orchestrator
 - [ ] 27. (Optional) Try Managed Agents and compare to self-hosting
 
