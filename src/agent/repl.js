@@ -47,14 +47,11 @@ let showThinking = true;
 const usingRunner = process.env.ANTHROPIC_LOOP === 'runner';
 const createAgent = usingRunner ? createToolRunnerChat : createChat;
 
-// Steps 17 and 19: the first two are for a human reviewer (via Claude Code's own MCP
-// connection), never the customer-facing agent - approving its own escalated refunds would
-// defeat the point. log_decision/list_tool_calls/list_decisions are the audit log (step 19):
-// log_decision is harness-only (called directly below, never by the model - whether a
-// decision gets logged isn't the model's call), and the list_* tools are for a human reviewer.
-const NOT_FOR_AGENT_TOOLS = new Set([
-  'list_escalations', 'resolve_refund_approval', 'log_decision', 'list_tool_calls', 'list_decisions',
-]);
+// log_decision is harness-only: called directly below, never by the model (whether a decision
+// gets logged isn't the model's call). The reviewer tools (resolve_refund_approval and the like)
+// aren't here because the agent's server doesn't have them: stdioTransport() starts it without
+// --reviewer. chat.js also refuses any tool_use for a tool not in agentTools.
+const NOT_FOR_AGENT_TOOLS = new Set(['log_decision']);
 const agentTools = mcp.tools.filter((t) => !NOT_FOR_AGENT_TOOLS.has(t.name));
 
 // The server's instructions go into the system prompt, as MCP clients usually do.

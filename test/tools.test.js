@@ -356,6 +356,50 @@ describe('concurrent writes', () => {
     dbA.exec('ROLLBACK');
     assert.equal(toolsB.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' }).ok, true);
   });
+
+  // The checks must run under the write lock, or another process can commit between a call's
+  // check and its write. now() is read during the checks, so it can fire a competing write there.
+  const interleaved = (competingWrite) => {
+    let fired = false;
+    return createTools(dbB, {
+      now: () => {
+        if (!fired) {
+          fired = true;
+          competingWrite();
+        }
+        return today;
+      },
+    });
+  };
+
+  test('two concurrent refunds under the approval limit cannot both skip approval', () => {
+    const toolsA = createTools(dbA, { now: () => today });
+    // ORD-5002 is ₹12,999; the standard limit is ₹5,000. Each ₹3,000 refund fits alone, not together.
+    const refund = (key) => ({ ...priya, order_id: 'ORD-5002', amount: 3_000, reason: 'damaged', idempotency_key: key });
+    let competing;
+    const racingTools = interleaved(() => {
+      competing = toolsA.initiateRefund(refund('race-a'));
+    });
+
+    const first = racingTools.initiateRefund(refund('race-b'));
+    assert.equal(competing.error, 'try_again');
+    assert.equal(first.refund.status, 'completed');
+    // Retried after the first commits, it sees the running total of ₹6,000 and needs a human.
+    assert.equal(toolsA.initiateRefund(refund('race-a')).refund.status, 'pending_approval');
+  });
+
+  test('a concurrent reject cannot be overwritten by an approve of the same escalation', () => {
+    const toolsA = createTools(dbA, { now: () => today });
+    let competing;
+    const racingTools = interleaved(() => {
+      competing = toolsA.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'reject' });
+    });
+
+    const approved = racingTools.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'approve' });
+    assert.equal(competing.error, 'try_again');
+    assert.equal(approved.refund.status, 'completed');
+    assert.equal(toolsA.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'reject' }).error, 'already_resolved');
+  });
 });
 
 describe('audit log', () => {

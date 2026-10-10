@@ -25,6 +25,7 @@ const resultText = ({ content = [] }) =>
 export function stdioTransport() {
   return new StdioClientTransport({
     command: process.execPath,
+    // No --reviewer: the agent's server has only the customer tools and log_decision.
     args: ['--disable-warning=ExperimentalWarning', 'src/mcp/stdio.js'], // node:sqlite's warning
     cwd: projectRoot,
     stderr: 'inherit', // the server logs to stderr; show it in the terminal

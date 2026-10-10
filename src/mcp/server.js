@@ -35,7 +35,11 @@ const handle = (fn) => async (args) => {
   }
 };
 
-export function createMcpServer(tools) {
+// reviewer: also register the tools for a human reviewer (listing and resolving escalations,
+// reading the audit log). Off by default, so the agent's own server process (src/agent/
+// mcpClient.js spawns it without --reviewer) doesn't have them at all: an agent able to call
+// resolve_refund_approval could approve its own escalated refunds. Claude Code passes --reviewer.
+export function createMcpServer(tools, { reviewer = false } = {}) {
   const server = new McpServer({ name: 'refund-tools', version: pkg.version }, { instructions });
 
   server.registerTool('get_customer', {
@@ -86,30 +90,9 @@ export function createMcpServer(tools) {
     annotations: { readOnlyHint: false, destructiveHint: false },
   }, handle(tools.escalateToHuman));
 
-  // The next two are for a human reviewer, not the customer-facing agent (which never lists them).
-  server.registerTool('list_escalations', {
-    title: 'List escalations for a human to review',
-    description: 'List escalations (refund approvals, account issues, risk holds) by status, for a human reviewer.',
-    inputSchema: {
-      status: z.enum(['open', 'resolved']).optional().describe('Defaults to open'),
-    },
-    annotations: { readOnlyHint: true },
-  }, handle(tools.listEscalations));
-
-  server.registerTool('resolve_refund_approval', {
-    title: 'Approve or reject a pending refund',
-    description: 'A human approves or rejects a refund that initiate_refund deferred for being above the auto-approve limit. Only works on open refund_approval escalations.',
-    inputSchema: {
-      escalation_id: z.string().describe('The escalation ID, e.g. ESC-401'),
-      decision: z.enum(['approve', 'reject']).describe('Whether to approve or reject the pending refund'),
-      resolution_note: z.string().optional().describe('Optional note for the audit trail, e.g. why it was rejected'),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
-  }, handle(tools.resolveRefundApproval));
-
-  // The next three are the audit log (step 19). log_decision is called directly by the
-  // harness (src/agent/repl.js) after each turn, never by the model; the two list_* tools
-  // are for a human reviewer, like list_escalations above.
+  // The audit log (step 19). log_decision is called directly by the harness (src/agent/repl.js)
+  // after each turn, never by the model, so the agent's server keeps it; chat.js only runs the
+  // tools it was given, and repl.js leaves this one out.
   server.registerTool('log_decision', {
     title: "Log the agent's decision for a turn",
     description: 'Records a structured decision (decision, amount, reason, needs_human) to the audit log. Not for use by the customer-facing agent.',
@@ -122,26 +105,50 @@ export function createMcpServer(tools) {
     annotations: { readOnlyHint: false, destructiveHint: false },
   }, handle(tools.logDecision));
 
-  server.registerTool('list_tool_calls', {
-    title: 'List logged tool calls for a human to review',
-    description: 'List every MCP tool call (by any consumer), newest first, optionally filtered by time or tool name.',
-    inputSchema: {
-      since: z.string().optional().describe('ISO-8601 timestamp; only calls at or after this time'),
-      tool_name: z.string().optional().describe('Only calls to this tool'),
-      limit: z.number().int().min(1).max(200).optional().describe('Defaults to 50, max 200'),
-    },
-    annotations: { readOnlyHint: true },
-  }, handle(tools.listToolCalls));
+  if (reviewer) {
+    // A human reviewer's escalation queue (step 17).
+    server.registerTool('list_escalations', {
+      title: 'List escalations for a human to review',
+      description: 'List escalations (refund approvals, account issues, risk holds) by status, for a human reviewer.',
+      inputSchema: {
+        status: z.enum(['open', 'resolved']).optional().describe('Defaults to open'),
+      },
+      annotations: { readOnlyHint: true },
+    }, handle(tools.listEscalations));
 
-  server.registerTool('list_decisions', {
-    title: 'List logged decisions for a human to review',
-    description: 'List every structured decision logged by log_decision, newest first, optionally filtered by time.',
-    inputSchema: {
-      since: z.string().optional().describe('ISO-8601 timestamp; only decisions at or after this time'),
-      limit: z.number().int().min(1).max(200).optional().describe('Defaults to 50, max 200'),
-    },
-    annotations: { readOnlyHint: true },
-  }, handle(tools.listDecisions));
+    server.registerTool('resolve_refund_approval', {
+      title: 'Approve or reject a pending refund',
+      description: 'A human approves or rejects a refund that initiate_refund deferred for being above the auto-approve limit. Only works on open refund_approval escalations.',
+      inputSchema: {
+        escalation_id: z.string().describe('The escalation ID, e.g. ESC-401'),
+        decision: z.enum(['approve', 'reject']).describe('Whether to approve or reject the pending refund'),
+        resolution_note: z.string().optional().describe('Optional note for the audit trail, e.g. why it was rejected'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    }, handle(tools.resolveRefundApproval));
+
+    // The audit log, for a human reviewer to read.
+    server.registerTool('list_tool_calls', {
+      title: 'List logged tool calls for a human to review',
+      description: 'List every MCP tool call (by any consumer), newest first, optionally filtered by time or tool name.',
+      inputSchema: {
+        since: z.string().optional().describe('ISO-8601 timestamp; only calls at or after this time'),
+        tool_name: z.string().optional().describe('Only calls to this tool'),
+        limit: z.number().int().min(1).max(200).optional().describe('Defaults to 50, max 200'),
+      },
+      annotations: { readOnlyHint: true },
+    }, handle(tools.listToolCalls));
+
+    server.registerTool('list_decisions', {
+      title: 'List logged decisions for a human to review',
+      description: 'List every structured decision logged by log_decision, newest first, optionally filtered by time.',
+      inputSchema: {
+        since: z.string().optional().describe('ISO-8601 timestamp; only decisions at or after this time'),
+        limit: z.number().int().min(1).max(200).optional().describe('Defaults to 50, max 200'),
+      },
+      annotations: { readOnlyHint: true },
+    }, handle(tools.listDecisions));
+  }
 
   return server;
 }

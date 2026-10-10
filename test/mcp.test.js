@@ -20,7 +20,7 @@ beforeEach(async () => {
   db = openDb(':memory:');
   applySchema(db);
   seed(db, today);
-  server = createMcpServer(createTools(db, { now: () => today }));
+  server = createMcpServer(createTools(db, { now: () => today }), { reviewer: true }); // all ten tools
   client = new Client({ name: 'test-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -41,6 +41,25 @@ const callJson = async (name, args) => {
   return { isError, body: JSON.parse(text) };
 };
 const refundCount = () => db.prepare('SELECT count(*) AS n FROM refunds').get().n;
+
+test('without reviewer, the server has only the customer tools and log_decision', async () => {
+  const agentServer = createMcpServer(createTools(db, { now: () => today }));
+  const agentClient = new Client({ name: 'test-agent', version: '0.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([agentServer.connect(serverTransport), agentClient.connect(clientTransport)]);
+  try {
+    const { tools } = await agentClient.listTools();
+    assert.deepEqual(tools.map((t) => t.name).sort(), [
+      'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'initiate_refund', 'log_decision',
+    ]);
+    const result = await agentClient.callTool({ name: 'resolve_refund_approval', arguments: { escalation_id: 'ESC-401', decision: 'approve' } });
+    assert.equal(result.isError, true);
+    assert.equal(db.prepare("SELECT status FROM refunds WHERE id = 'REF-303'").get().status, 'pending_approval');
+  } finally {
+    await agentClient.close();
+    await agentServer.close();
+  }
+});
 
 test('lists the ten tools with descriptions, schemas and read-only hints', async () => {
   const { tools } = await client.listTools();

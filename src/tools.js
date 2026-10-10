@@ -25,10 +25,10 @@ const notVerified = () =>
 // The same answer for a missing order and someone else's order.
 const orderNotFound = () => fail('order_not_found', 'No order with that ID was found for this customer.');
 
-// SQLITE_BUSY (another connection holds the write lock) or SQLITE_CONSTRAINT_TRIGGER (the
-// refund_total_guard trigger fired because a concurrent writer committed between this call's
-// eligibility check and its own BEGIN IMMEDIATE). Both mean "retry", not "something is broken".
-const isRetryable = (err) => err?.errcode === 5 || err?.errcode === 1811;
+// SQLITE_BUSY: another connection holds the write lock, so retrying shortly will work. The checks
+// run under that lock, so the refund_total_guard trigger firing (SQLITE_CONSTRAINT_TRIGGER) means a
+// bug in them, not a race: it is rethrown, and the server reports it as internal_error.
+const isRetryable = (err) => err?.errcode === 5;
 
 export function createTools(db, { now = () => new Date() } = {}) {
   const findCustomer = db.prepare(`
@@ -100,8 +100,8 @@ export function createTools(db, { now = () => new Date() } = {}) {
     ORDER BY at DESC, rowid DESC LIMIT ?
   `);
 
-  // Runs fn() inside a write transaction, translating lock contention or the DB's own
-  // refund_total_guard trigger into a stable { error: 'try_again' } instead of a raw exception.
+  // Runs fn() inside a write transaction (its reads included), translating lock contention into a
+  // stable { error: 'try_again' } instead of a raw exception.
   function inTransaction(fn, retryMessage) {
     try {
       db.exec('BEGIN IMMEDIATE');
@@ -301,7 +301,16 @@ export function createTools(db, { now = () => new Date() } = {}) {
 
   // amount is whole rupees. idempotency_key: retrying with the same key returns the original refund
   // instead of refunding twice.
-  function initiateRefund({ email, card_last4, order_id, amount, reason, reason_details, idempotency_key } = {}) {
+  // The checks read the DB, so they run under the write lock with the insert: otherwise another
+  // process could commit a refund in between, and both could pass the approval limit check.
+  function initiateRefund(args) {
+    return inTransaction(
+      () => checkAndInsertRefund(args),
+      'Another refund request for this order is in progress. Retry with the same idempotency_key.',
+    );
+  }
+
+  function checkAndInsertRefund({ email, card_last4, order_id, amount, reason, reason_details, idempotency_key } = {}) {
     const customer = verify(email, card_last4);
     if (!customer) return notVerified();
     const order = ownedOrder(order_id, customer.id);
@@ -351,21 +360,19 @@ export function createTools(db, { now = () => new Date() } = {}) {
 
     const refundId = nextId('refunds', 'REF-', 301);
     const at = now().toISOString();
-    return inTransaction(() => {
-      insertRefund.run(
-        refundId, order.payment_id, amount, reason, reason_details ?? null,
-        needsApproval ? 'pending_approval' : 'completed', key, at,
-        needsApproval ? null : at, needsApproval ? null : 'agent',
-      );
-      if (needsApproval) {
-        const summary =
-          `${customer.name} (${customer.tier}) requests ${formatInr(amount)} of ${formatInr(order.total)} for "${order.description}" (${order.id}), ` +
-          `reason: ${reason}${reason_details ? ` ("${reason_details}")` : ''}. ` +
-          `Refunds on this order would total ${formatInr(runningTotal)}, above the ${formatInr(limit)} ${customer.tier} limit.`;
-        insertEscalation.run(nextId('escalations', 'ESC-', 401), 'refund_approval', customer.id, null, order.id, refundId, summary, at);
-      }
-      return refundResult(refundId, false);
-    }, 'Another refund request for this order is in progress. Retry with the same idempotency_key.');
+    insertRefund.run(
+      refundId, order.payment_id, amount, reason, reason_details ?? null,
+      needsApproval ? 'pending_approval' : 'completed', key, at,
+      needsApproval ? null : at, needsApproval ? null : 'agent',
+    );
+    if (needsApproval) {
+      const summary =
+        `${customer.name} (${customer.tier}) requests ${formatInr(amount)} of ${formatInr(order.total)} for "${order.description}" (${order.id}), ` +
+        `reason: ${reason}${reason_details ? ` ("${reason_details}")` : ''}. ` +
+        `Refunds on this order would total ${formatInr(runningTotal)}, above the ${formatInr(limit)} ${customer.tier} limit.`;
+      insertEscalation.run(nextId('escalations', 'ESC-', 401), 'refund_approval', customer.id, null, order.id, refundId, summary, at);
+    }
+    return refundResult(refundId, false);
   }
 
   // For account requests and risk cases. Works for unverified customers too: the escalation is then
@@ -443,24 +450,26 @@ export function createTools(db, { now = () => new Date() } = {}) {
     }
 
     const id = escalation_id.trim();
-    const escalation = findEscalation.get(id);
-    if (!escalation) return fail('escalation_not_found', 'No escalation with that id was found.');
-    if (escalation.type !== 'refund_approval') {
-      return fail('not_a_refund_approval', `This escalation is type "${escalation.type}"; resolve_refund_approval only handles refund_approval escalations.`);
-    }
-    if (escalation.status !== 'open') {
-      return fail('already_resolved', 'This escalation was already resolved.');
-    }
-
-    const refund = findRefund.get(escalation.refund_id);
-    if (!refund || refund.status !== 'pending_approval') {
-      return fail('refund_not_pending', 'This refund is no longer pending approval.');
-    }
-
-    const at = now().toISOString();
-    const note = resolution_note?.trim() || null;
-    const newStatus = decision === 'approve' ? 'completed' : 'rejected';
+    // The status checks run under the write lock with the update, so a concurrent approve and
+    // reject can't both pass them, with the second overwriting the first.
     return inTransaction(() => {
+      const escalation = findEscalation.get(id);
+      if (!escalation) return fail('escalation_not_found', 'No escalation with that id was found.');
+      if (escalation.type !== 'refund_approval') {
+        return fail('not_a_refund_approval', `This escalation is type "${escalation.type}"; resolve_refund_approval only handles refund_approval escalations.`);
+      }
+      if (escalation.status !== 'open') {
+        return fail('already_resolved', 'This escalation was already resolved.');
+      }
+
+      const refund = findRefund.get(escalation.refund_id);
+      if (!refund || refund.status !== 'pending_approval') {
+        return fail('refund_not_pending', 'This refund is no longer pending approval.');
+      }
+
+      const at = now().toISOString();
+      const note = resolution_note?.trim() || null;
+      const newStatus = decision === 'approve' ? 'completed' : 'rejected';
       updateRefundResolution.run(newStatus, at, 'human', refund.id);
       resolveEscalationRow.run(at, note, id);
       return {

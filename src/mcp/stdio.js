@@ -1,4 +1,4 @@
-// Entry point: runs the MCP server over stdio (npm run mcp).
+// Entry point: runs the MCP server over stdio (npm run mcp). Pass --reviewer for the reviewer tools.
 // stdout carries the JSON-RPC protocol, so never console.log here. Log with console.error.
 import { mkdirSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -26,7 +26,9 @@ if (!isReady(db)) {
   console.error(`[refund-tools] created and seeded ${defaultDbPath}`);
 }
 
-const server = createMcpServer(createTools(db));
+// --reviewer adds the human-reviewer tools (.mcp.json passes it for Claude Code). The agent's
+// server is started without it, so it never has resolve_refund_approval.
+const server = createMcpServer(createTools(db), { reviewer: process.argv.includes('--reviewer') });
 await server.connect(new StdioServerTransport());
 console.error('[refund-tools] MCP server running on stdio');
 

@@ -13,7 +13,7 @@
     "test": "node --test",
     "db:reset": "node src/db/reset.js",
     "mcp": "node src/mcp/stdio.js",
-    "mcp:inspect": "npx @modelcontextprotocol/inspector node src/mcp/stdio.js",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node src/mcp/stdio.js --reviewer",
     "chat": "node --env-file-if-exists=.env src/agent/repl.js"
   },
   "dependencies": {

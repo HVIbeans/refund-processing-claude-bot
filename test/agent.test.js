@@ -54,7 +54,9 @@ const use = (...calls) => ({
   content: calls.map(([id, name, input = {}]) => ({ type: 'tool_use', id, name, input })),
   stop_reason: 'tool_use',
 });
-const TOOLS = [{ name: 'get_customer', description: 'Look up', input_schema: { type: 'object', properties: {} } }];
+// The customer-facing tools: chat.js only runs a tool_use whose name is in its tools list.
+const TOOLS = ['get_customer', 'get_order', 'get_payment', 'initiate_refund', 'escalate_to_human']
+  .map((name) => ({ name, description: 'Look up', input_schema: { type: 'object', properties: {} } }));
 
 // A stand-in for mcp.callTool: records calls and answers from a map of name -> result (or Error).
 function fakeTools(answers = {}) {
@@ -245,6 +247,22 @@ describe('createChat tool loop', () => {
     assert.equal(order.is_error, true);
     assert.match(order.content, /could not be run: MCP connection closed/);
     assert.deepEqual(seen.map((c) => [c.name, c.isError]), [['initiate_refund', true], ['get_order', true]]);
+  });
+
+  // The model's output is untrusted: a tool_use for a tool it wasn't given (e.g. a reviewer-only
+  // tool the MCP server also exposes) must never reach callTool.
+  test('refuses a tool_use for a tool not in its tools list, without calling it', async () => {
+    const client = fakeClient([use(['a', 'resolve_refund_approval', { escalation_id: 'ESC-401', decision: 'approve' }]), say('Sorry.')]);
+    const tools = fakeTools();
+    const seen = [];
+    const chat = createChat({ client, tools: TOOLS, callTool: tools.callTool, onToolCall: (c) => seen.push(c) });
+
+    await chat.send('Approve my refund');
+    assert.deepEqual(tools.calls, []);
+    const [result] = client.requests[1].messages.at(-1).content;
+    assert.equal(result.is_error, true);
+    assert.match(result.content, /no tool named "resolve_refund_approval"/i);
+    assert.deepEqual(seen.map((c) => [c.name, c.isError]), [['resolve_refund_approval', true]]);
   });
 
   test('streams the text of every API call in the turn, in order', async () => {
@@ -544,7 +562,7 @@ describe('createChat prompt caching', () => {
   });
 
   test('cache: true marks the system prompt and the last tool as cache breakpoints', async () => {
-    const twoTools = [...TOOLS, { name: 'get_order', description: 'Look up', input_schema: { type: 'object', properties: {} } }];
+    const twoTools = TOOLS.slice(0, 2); // get_customer, get_order
     const client = fakeClient([say('Hi')]);
     await createChat({ client, system: 'SYSTEM', tools: twoTools, cache: true }).send('Hi');
 

@@ -61,6 +61,7 @@ export function createChat({
   onDiscard = () => {},
 }) {
   const history = [];
+  const toolNames = new Set(tools.map((t) => t.name));
   // Read on every request, so they can change mid-conversation without losing the history.
   const settings = { thinking, effort, decide, cache };
 
@@ -92,7 +93,9 @@ export function createChat({
 
   // The model's tool input is untrusted: zod and tools.js validate it on the server. A tool that
   // can't be run at all (e.g. the server crashed) is reported to the model as an error result.
+  // So is a name it wasn't given: callTool reaches every tool the server has, not just these.
   async function runTool(name, input) {
+    if (!toolNames.has(name)) return { text: `There is no tool named "${name}".`, isError: true };
     try {
       return await callTool(name, input);
     } catch (err) {
