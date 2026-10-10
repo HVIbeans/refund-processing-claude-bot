@@ -35,8 +35,8 @@ Tick items off as you go (`- [x]`).
 
 ## Phase 4 — Claude Code power features
 - [x] 21. **Hooks** (e.g. `PreToolUse` protecting the policy file, `PostToolUse` running tests)
-- [ ] 22. Custom **subagents** in `.claude/agents/` (policy-reviewer, test-writer)
-- [ ] 23. **Skills / slash commands** (e.g. `/new-test-scenario`)
+- [x] 22. Custom **subagents** in `.claude/agents/` (policy-reviewer)
+- [x] 23. **Skills / slash commands** (`/next-step`; later ideas: `/new-test-scenario`, `/sync`, `/review-rules`)
 - [ ] 24. Run `/security-review` on the refund code
 
 ## Phase 5 — Agent SDK & multi-agent

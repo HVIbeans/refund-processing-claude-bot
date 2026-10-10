@@ -85,6 +85,19 @@ A `UserPromptSubmit` hook (`.claude/hooks/prompt-coach.js`) reviews each user pr
 
 The server's `/prompt-feedback` page shows the log live. `src/promptFeedback.js` parses the markdown log, so if you change the review format in the agent file, update the parser and its tests too.
 
+## Policy-reviewer subagent (step 22)
+
+`.claude/agents/policy-reviewer.md` reviews changes to the refund code against the hard rules, using a numbered checklist (rules in tool code, identity, existence leaks, checks inside the write transaction, the reviewer/agent split, hidden limits, layering, stable results). It only has `Read`, `Grep` and `Glob`, so it can't change code, and it can't run git either: pass it the diff (a file path or the text). It loads this `CLAUDE.md` like any session, so when reviewing an old commit, give it snapshot files and expect it to compare against today's notes.
+
+## `/next-step` skill (step 23)
+
+`.claude/skills/next-step/SKILL.md` runs the roadmap workflow: `/next-step` (or `plan`) plans the first unticked numbered step, checking the feature against current docs first, and then asks who builds it. `/next-step done` checks the done-when criteria, runs `npm test`, ticks the step and adds its note here, and shows the diff without committing. Claude can also start it on its own (no `disable-model-invocation`), e.g. on "let's plan the next step".
+
+- **Injected state:** `` !`…` `` lines run before Claude reads the skill (unticked roadmap items, ahead/behind, uncommitted files, recent commits), and their output replaces them. They run in Git Bash here; if one fails, the whole skill aborts.
+- **`arguments: [mode]`** puts the first word after the command into `$mode`. **`allowed-tools`** pre-approves only reads, read-only git, `grep` and `head`.
+- **Editor warning:** VS Code flags `arguments` and `allowed-tools` as unsupported. That's VS Code's own skill schema; Claude Code supports both (`$mode` was filled in on the first run).
+- A new `.claude/skills/` folder needs `/reload-skills` once; edits to an existing skill reload on their own.
+
 ## Dev-safety hooks (step 21)
 
 Two more hooks, same plain-Node-ESM-script shape as `prompt-coach.js`, registered in `.claude/settings.json` under `PreToolUse`/`PostToolUse` with matcher `Edit|Write`:
