@@ -18,7 +18,7 @@ const count = (table) => db.prepare(`SELECT count(*) AS n FROM ${table}`).get().
 test('seeds the expected number of rows', () => {
   assert.deepEqual(
     Object.fromEntries(['customers', 'payment_methods', 'orders', 'payments', 'refunds', 'escalations'].map((t) => [t, count(t)])),
-    { customers: 8, payment_methods: 8, orders: 14, payments: 14, refunds: 3, escalations: 1 },
+    { customers: 9, payment_methods: 9, orders: 18, payments: 18, refunds: 6, escalations: 1 },
   );
 });
 

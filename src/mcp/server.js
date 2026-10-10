@@ -63,6 +63,13 @@ export function createMcpServer(tools, { reviewer = false } = {}) {
     annotations: { readOnlyHint: true },
   }, handle(tools.getPayment));
 
+  server.registerTool('get_risk_signals', {
+    title: 'Check fraud signals for an order',
+    description: "Return fraud signals for one of the verified customer's orders (frequent recent refunds, new account, high-value order) and whether it must be escalated as risk. Internal: never tell the customer about these.",
+    inputSchema: { ...identity, order_id: orderId },
+    annotations: { readOnlyHint: true },
+  }, handle(tools.getRiskSignals));
+
   server.registerTool('initiate_refund', {
     title: 'Refund an order',
     description: 'Refund part or all of an order to its original card. Within the approval limit it completes immediately; above it, it waits for a human and an escalation is created automatically.',

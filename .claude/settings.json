@@ -12,6 +12,7 @@
       "mcp__refund-tools__get_customer",
       "mcp__refund-tools__get_order",
       "mcp__refund-tools__get_payment",
+      "mcp__refund-tools__get_risk_signals",
       "mcp__refund-tools__list_escalations",
       "mcp__refund-tools__list_tool_calls",
       "mcp__refund-tools__list_decisions"

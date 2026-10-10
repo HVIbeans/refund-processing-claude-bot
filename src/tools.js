@@ -32,7 +32,7 @@ const isRetryable = (err) => err?.errcode === 5;
 
 export function createTools(db, { now = () => new Date() } = {}) {
   const findCustomer = db.prepare(`
-    SELECT c.id, c.name, c.email, c.status, c.tier FROM customers c
+    SELECT c.id, c.name, c.email, c.status, c.tier, c.created_at FROM customers c
     WHERE c.email = ? AND EXISTS (SELECT 1 FROM payment_methods pm WHERE pm.customer_id = c.id AND pm.last4 = ?)
   `);
   const listCards = db.prepare('SELECT brand, last4 FROM payment_methods WHERE customer_id = ? ORDER BY id');
@@ -82,6 +82,13 @@ export function createTools(db, { now = () => new Date() } = {}) {
     ORDER BY e.created_at
   `);
   const findEscalation = db.prepare('SELECT id, type, status, refund_id FROM escalations WHERE id = ?');
+  // Refunds a customer asked for (and didn't have rejected) since a given time, across all orders.
+  const countRecentRefunds = db.prepare(`
+    SELECT count(*) AS n FROM refunds r
+    JOIN payments p ON p.id = r.payment_id
+    JOIN orders o ON o.id = p.order_id
+    WHERE o.customer_id = ? AND r.status <> 'rejected' AND r.requested_at >= ?
+  `);
   const updateRefundResolution = db.prepare('UPDATE refunds SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?');
   const resolveEscalationRow = db.prepare("UPDATE escalations SET status = 'resolved', resolved_at = ?, resolution_note = ? WHERE id = ?");
   const insertToolCallLog = db.prepare('INSERT INTO tool_call_log (id, at, tool_name, input, output, is_error) VALUES (?, ?, ?, ?, ?, ?)');
@@ -166,6 +173,21 @@ export function createTools(db, { now = () => new Date() } = {}) {
     return findOrder.get(orderId.trim(), customerId) ?? null;
   }
 
+  // Fraud signals (step 26): only whether each is true, never the counts or ages behind them,
+  // since a count next to its flag would give the threshold away (the model could quote it).
+  // review: whether a human should look before any refund; decided here, not by an agent.
+  function riskSignals(customer, order) {
+    const { windowDays, maxRefunds, newAccountDays, highValueOrder, reviewAtSignals } = POLICY.risk;
+    const since = new Date(now() - windowDays * DAY_MS).toISOString();
+    const signals = {
+      frequent_refunds: countRecentRefunds.get(customer.id, since).n >= maxRefunds,
+      new_account: now() - new Date(customer.created_at) < newAccountDays * DAY_MS,
+      high_value_order: order.total >= highValueOrder,
+    };
+    const count = Object.values(signals).filter(Boolean).length;
+    return { signals, review: signals.frequent_refunds || count >= reviewAtSignals };
+  }
+
   // Whether this order can be refunded right now, and how much is left.
   // getPayment shows it to the agent; initiateRefund enforces it.
   function assess(customer, order, refunds) {
@@ -196,6 +218,10 @@ export function createTools(db, { now = () => new Date() } = {}) {
       blocker = ['outside_refund_window', `The order was delivered ${facts.days_since_delivery} days ago, past the ${POLICY.refundWindowDays}-day refund window.`];
     } else if (refundable <= 0) {
       blocker = ['already_fully_refunded', 'This order has already been fully refunded (or the rest is waiting for approval).'];
+    } else if (riskSignals(customer, order).signals.frequent_refunds) {
+      // A hard limit, enforced here so no agent (or fraud checker's judgment) can talk past it.
+      // Last, so an order that isn't refundable anyway gets the plainer reason.
+      blocker = ['too_many_recent_refunds', 'This customer has had several refunds recently, which needs a manual review before another. Escalate as type "risk", and do not tell the customer why.', 'risk'];
     }
 
     if (!blocker) return { eligible: true, ...facts };
@@ -297,6 +323,25 @@ export function createTools(db, { now = () => new Date() } = {}) {
         resolved_at: r.resolved_at,
       })),
       refund_eligibility: assess(customer, o, refunds),
+    };
+  }
+
+  // Read-only: the fraud signals for one of the verified customer's orders, plus the eligibility
+  // verdict (which already includes the hard frequency limit).
+  function getRiskSignals({ email, card_last4, order_id } = {}) {
+    const customer = verify(email, card_last4);
+    if (!customer) return notVerified();
+    const o = ownedOrder(order_id, customer.id);
+    if (!o) return orderNotFound();
+    const eligibility = assess(customer, o, listRefunds.all(o.payment_id));
+    const { signals, review } = riskSignals(customer, o);
+    return {
+      ok: true,
+      order_id: o.id,
+      signals,
+      // Also review when the account or payment already needs a risk escalation (flagged, disputed).
+      review: review || eligibility.escalate_as === 'risk',
+      escalate_as: eligibility.escalate_as ?? null,
     };
   }
 
@@ -555,14 +600,14 @@ export function createTools(db, { now = () => new Date() } = {}) {
   // tool_call_log.tool_name (and listToolCalls's tool_name filter) matches what a human
   // reviewing the log actually sees in Claude Code or the MCP Inspector.
   const MCP_NAMES = {
-    getCustomer: 'get_customer', getOrder: 'get_order', getPayment: 'get_payment',
+    getCustomer: 'get_customer', getOrder: 'get_order', getPayment: 'get_payment', getRiskSignals: 'get_risk_signals',
     initiateRefund: 'initiate_refund', escalateToHuman: 'escalate_to_human',
     listEscalations: 'list_escalations', resolveRefundApproval: 'resolve_refund_approval',
     logDecision: 'log_decision', listToolCalls: 'list_tool_calls', listDecisions: 'list_decisions',
   };
   return Object.fromEntries(
     Object.entries({
-      getCustomer, getOrder, getPayment, initiateRefund, escalateToHuman,
+      getCustomer, getOrder, getPayment, getRiskSignals, initiateRefund, escalateToHuman,
       listEscalations, resolveRefundApproval, logDecision, listToolCalls, listDecisions,
     }).map(([key, fn]) => [key, audited(MCP_NAMES[key], fn)]),
   );

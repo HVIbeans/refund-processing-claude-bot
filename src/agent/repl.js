@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { DEFAULT_MODEL, createChat } from './chat.js';
 import { createToolRunnerChat } from './toolRunnerChat.js';
 import { createSdkChat } from './sdkChat.js';
+import { createMultiAgentChat } from './multiAgent.js';
 import { connectMcp, stdioTransport } from './mcpClient.js';
 import { modelSupport } from './capabilities.js';
 import { buildSystemPrompt } from './systemPrompt.js';
@@ -44,12 +45,14 @@ const supportsEffort = (level) => support.effortLevels.includes(level);
 // Only controls what's printed: hidden thinking is still generated, kept in the history and billed.
 let showThinking = true;
 
-// Roadmap steps 16 and 25: compare the hand-written loop against the SDK's beta Tool Runner
-// (ANTHROPIC_LOOP=runner) and the Claude Agent SDK (ANTHROPIC_LOOP=sdk).
+// Roadmap steps 16, 25 and 26: compare the hand-written loop against the SDK's beta Tool Runner
+// (ANTHROPIC_LOOP=runner), the Claude Agent SDK (ANTHROPIC_LOOP=sdk) and an orchestrator with
+// specialist agents, on the hand-written loop (ANTHROPIC_LOOP=multi).
 const LOOPS = {
   manual: { create: createChat, label: 'manual' },
   runner: { create: createToolRunnerChat, label: 'tool runner (beta)' },
   sdk: { create: createSdkChat, label: 'Claude Agent SDK' },
+  multi: { create: createMultiAgentChat, label: 'multi-agent (orchestrator + triage, fraud-checker, refund-specialist)' },
 };
 const loop = LOOPS[process.env.ANTHROPIC_LOOP || 'manual'];
 if (!loop) {
@@ -82,6 +85,9 @@ const chat = loop.create({
   // Agent SDK only: it starts its own copy of the server, so it must be told what to hide.
   hiddenToolNames: [...NOT_FOR_AGENT_TOOLS],
   onInit: showInit,
+  // Multi-agent only: the specialists' prompts carry the server's instructions.
+  toolInstructions: mcp.instructions,
+  onAgent: showAgent,
 });
 
 // Streamed text is written as it arrives. Each stretch starts with its prefix, `thinking> ` (dim)
@@ -211,7 +217,7 @@ function n(x = 0) {
 
 // One dim line per tool call, so you can watch the loop. It shows the customer's email and card
 // digits, which is fine in your own terminal (redacting them in logs is a later step).
-function showToolCall({ name, input, isError, text }) {
+function showToolCall({ name, input, isError, text, agent }) {
   let outcome = isError ? 'error' : 'ok';
   try {
     const { error } = JSON.parse(text);
@@ -221,8 +227,19 @@ function showToolCall({ name, input, isError, text }) {
   }
   endLine();
   startBlock();
-  console.log(dim(`  ↳ ${name} ${JSON.stringify(input)} → ${outcome}`));
+  // A specialist's own tool calls (multi-agent) are indented under it.
+  const prefix = agent ? `    ↳ ${agent}: ` : '  ↳ ';
+  console.log(dim(`${prefix}${name} ${JSON.stringify(input)} → ${outcome}`));
   shown = false; // that call's output is kept; a later discard only concerns the next call
+}
+
+// Multi-agent only: a specialist starting (its own tool calls follow, indented). Its finish shows
+// up as the orchestrator's tool call line.
+function showAgent({ agent, phase }) {
+  if (phase !== 'start') return;
+  endLine();
+  startBlock();
+  console.log(dim(`  ↳ ${agent} working…`));
 }
 
 // Agent SDK only: what the Claude Code process says the agent really has, from its system/init

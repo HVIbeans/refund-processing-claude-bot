@@ -16,6 +16,7 @@ export function seed(db, today = new Date()) {
     ['CUS-1006', 'Vikram Rao', 'vikram.rao@example.com', '+91 98200 00006', 'active', 'standard', daysAgo(180)],
     ['CUS-1007', 'Anita Desai', 'anita.desai@example.com', '+91 98200 00007', 'active', 'standard', daysAgo(320)],
     ['CUS-1008', 'Meera Nair', 'meera.nair@example.com', '+91 98200 00008', 'active', 'standard', daysAgo(10)], // no cards: can't be verified
+    ['CUS-1009', 'Kabir Malhotra', 'kabir.malhotra@example.com', '+91 98200 00009', 'active', 'standard', daysAgo(20)], // new account, refunds often
   ];
 
   const paymentMethods = [
@@ -28,6 +29,7 @@ export function seed(db, today = new Date()) {
     ['PM-206', 'CUS-1005', 'mastercard', '3131', 7, 2027],
     ['PM-207', 'CUS-1006', 'rupay', '6521', 9, 2028],
     ['PM-208', 'CUS-1007', 'visa', '7777', 12, 2029],
+    ['PM-209', 'CUS-1009', 'visa', '8080', 6, 2030],
   ];
 
   // Each order gets exactly one payment: [order, payment].
@@ -54,6 +56,11 @@ export function seed(db, today = new Date()) {
     [['ORD-5013', 'CUS-1006', 'Gaming mouse', 'delivered', daysAgo(18), daysAgo(15), 4_200], ['PM-207', 'disputed']],
     // Anita: a refund already waiting for approval
     [['ORD-5014', 'CUS-1007', 'Office chair', 'delivered', daysAgo(10), daysAgo(6), 9_000], ['PM-208', 'captured']],
+    // Kabir: three refunds already this month (the fraud limit), then a high-value order on a new account
+    [['ORD-5015', 'CUS-1009', 'Power bank', 'delivered', daysAgo(19), daysAgo(17), 1_800], ['PM-209', 'captured']],
+    [['ORD-5016', 'CUS-1009', 'Smart bulb x4', 'delivered', daysAgo(16), daysAgo(14), 2_400], ['PM-209', 'captured']],
+    [['ORD-5017', 'CUS-1009', 'Fitness band', 'delivered', daysAgo(12), daysAgo(10), 3_200], ['PM-209', 'captured']],
+    [['ORD-5018', 'CUS-1009', 'Noise-cancelling headphones', 'delivered', daysAgo(4), daysAgo(2), 14_000], ['PM-209', 'captured']],
   ];
 
   const refunds = [
@@ -61,6 +68,9 @@ export function seed(db, today = new Date()) {
     ['REF-301', 'PAY-9006', 3_000, 'damaged', 'One shoe split at the sole', 'completed', 'seed-ref-301', daysAgo(10), daysAgo(10), 'agent'],
     ['REF-302', 'PAY-9007', 2_499, 'not_as_described', 'Much thinner than the listing said', 'completed', 'seed-ref-302', daysAgo(15), daysAgo(15), 'agent'],
     ['REF-303', 'PAY-9014', 7_000, 'damaged', 'Armrest snapped off on day one', 'pending_approval', 'seed-ref-303', daysAgo(2), null, null],
+    ['REF-304', 'PAY-9015', 1_800, 'damaged', 'Stopped charging', 'completed', 'seed-ref-304', daysAgo(15), daysAgo(15), 'agent'],
+    ['REF-305', 'PAY-9016', 2_400, 'not_as_described', 'Colours were wrong', 'completed', 'seed-ref-305', daysAgo(12), daysAgo(12), 'agent'],
+    ['REF-306', 'PAY-9017', 3_200, 'wrong_item', 'Received a different model', 'completed', 'seed-ref-306', daysAgo(8), daysAgo(8), 'agent'],
   ];
 
   const escalations = [

@@ -20,7 +20,7 @@ beforeEach(async () => {
   db = openDb(':memory:');
   applySchema(db);
   seed(db, today);
-  server = createMcpServer(createTools(db, { now: () => today }), { reviewer: true }); // all ten tools
+  server = createMcpServer(createTools(db, { now: () => today }), { reviewer: true }); // all eleven tools
   client = new Client({ name: 'test-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -50,7 +50,7 @@ test('without reviewer, the server has only the customer tools and log_decision'
   try {
     const { tools } = await agentClient.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
-      'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'initiate_refund', 'log_decision',
+      'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'get_risk_signals', 'initiate_refund', 'log_decision',
     ]);
     const result = await agentClient.callTool({ name: 'resolve_refund_approval', arguments: { escalation_id: 'ESC-401', decision: 'approve' } });
     assert.equal(result.isError, true);
@@ -61,18 +61,18 @@ test('without reviewer, the server has only the customer tools and log_decision'
   }
 });
 
-test('lists the ten tools with descriptions, schemas and read-only hints', async () => {
+test('lists the eleven tools with descriptions, schemas and read-only hints', async () => {
   const { tools } = await client.listTools();
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
   assert.deepEqual(Object.keys(byName).sort(), [
-    'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'initiate_refund',
+    'escalate_to_human', 'get_customer', 'get_order', 'get_payment', 'get_risk_signals', 'initiate_refund',
     'list_decisions', 'list_escalations', 'list_tool_calls', 'log_decision', 'resolve_refund_approval',
   ]);
   for (const tool of tools) {
     assert.ok(tool.description, tool.name);
     assert.equal(tool.inputSchema.type, 'object', tool.name);
   }
-  for (const name of ['get_customer', 'get_order', 'get_payment', 'list_escalations', 'list_tool_calls', 'list_decisions']) {
+  for (const name of ['get_customer', 'get_order', 'get_payment', 'get_risk_signals', 'list_escalations', 'list_tool_calls', 'list_decisions']) {
     assert.equal(byName[name].annotations.readOnlyHint, true, name);
   }
   for (const name of ['initiate_refund', 'escalate_to_human', 'resolve_refund_approval', 'log_decision']) {
@@ -94,12 +94,13 @@ test('get_customer returns the verified customer as JSON', async () => {
 
 test('initiate_refund completes once, and a retry with the same key replays it', async () => {
   const args = { ...priya, order_id: 'ORD-5001', amount: 1_000, reason: 'damaged', idempotency_key: 'mcp-1' };
+  const before = refundCount();
   const first = await callJson('initiate_refund', args);
   const retry = await callJson('initiate_refund', args);
   assert.equal(first.body.refund.status, 'completed');
   assert.equal(retry.body.replayed, true);
   assert.equal(retry.body.refund.id, first.body.refund.id);
-  assert.equal(refundCount(), 4);
+  assert.equal(refundCount(), before + 1);
 });
 
 test('a policy refusal comes back as isError with the error code', async () => {
@@ -110,12 +111,13 @@ test('a policy refusal comes back as isError with the error code', async () => {
 
 test('input that fails the schema is rejected before the tool runs', async () => {
   const base = { ...priya, order_id: 'ORD-5001', amount: 1_000, reason: 'damaged', idempotency_key: 'mcp-3' };
+  const before = refundCount();
   for (const bad of [{ amount: 'lots' }, { amount: 99.5 }, { reason: 'changed_mind' }, { idempotency_key: undefined }]) {
     const { isError, text } = await call('initiate_refund', { ...base, ...bad });
     assert.equal(isError, true, JSON.stringify(bad));
     assert.match(text, /Input validation error/);
   }
-  assert.equal(refundCount(), 3);
+  assert.equal(refundCount(), before);
 });
 
 test('list_escalations and resolve_refund_approval let a human review and resolve a pending refund', async () => {

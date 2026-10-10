@@ -18,6 +18,7 @@ const rahul = { email: 'rahul.verma@example.com', card_last4: '9001' };
 const sana = { email: 'sana.iqbal@example.com', card_last4: '3131' };
 const vikram = { email: 'vikram.rao@example.com', card_last4: '6521' };
 const anita = { email: 'anita.desai@example.com', card_last4: '7777' };
+const kabir = { email: 'kabir.malhotra@example.com', card_last4: '8080' };
 
 let db;
 let tools;
@@ -135,6 +136,61 @@ describe('getPayment', () => {
   });
 });
 
+describe('getRiskSignals', () => {
+  test('a new account with frequent refunds and a high-value order shows all three signals and must escalate', () => {
+    const { ok, signals, review, escalate_as } = tools.getRiskSignals({ ...kabir, order_id: 'ORD-5018' });
+    assert.equal(ok, true);
+    assert.deepEqual(signals, { frequent_refunds: true, new_account: true, high_value_order: true });
+    assert.equal(review, true);
+    assert.equal(escalate_as, 'risk');
+  });
+
+  test('two soft signals mean review, even below the hard limit; one alone is clear', () => {
+    db.prepare("DELETE FROM refunds WHERE id IN ('REF-304', 'REF-305', 'REF-306')").run();
+    const kabirNow = tools.getRiskSignals({ ...kabir, order_id: 'ORD-5018' });
+    assert.deepEqual(kabirNow.signals, { frequent_refunds: false, new_account: true, high_value_order: true });
+    assert.equal(kabirNow.review, true);
+    assert.equal(kabirNow.escalate_as, null, 'review is advice for the agents, not a hard blocker');
+
+    const priyaHighValue = tools.getRiskSignals({ ...priya, order_id: 'ORD-5002' });
+    assert.deepEqual(priyaHighValue.signals, { frequent_refunds: false, new_account: false, high_value_order: true });
+    assert.equal(priyaHighValue.review, false);
+  });
+
+  test('an established customer with no recent refunds is clear', () => {
+    const { signals, review, escalate_as } = tools.getRiskSignals({ ...priya, order_id: 'ORD-5001' });
+    assert.deepEqual(signals, { frequent_refunds: false, new_account: false, high_value_order: false });
+    assert.equal(review, false);
+    assert.equal(escalate_as, null);
+  });
+
+  test('a flagged account or disputed payment is review too', () => {
+    assert.equal(tools.getRiskSignals({ ...rahul, order_id: 'ORD-5008' }).review, true);
+    assert.equal(tools.getRiskSignals({ ...vikram, order_id: 'ORD-5013' }).review, true);
+  });
+
+  test('only counts refunds that were not rejected, inside the window', () => {
+    // Neha has two refunds in the window: one more is still allowed, and that one reaches the limit.
+    assert.equal(tools.getRiskSignals({ ...neha, order_id: 'ORD-5006' }).signals.frequent_refunds, false);
+    assert.equal(refund(neha, 'ORD-5006', 100).ok, true);
+    assert.equal(tools.getRiskSignals({ ...neha, order_id: 'ORD-5006' }).signals.frequent_refunds, true);
+    assert.equal(refund(neha, 'ORD-5006', 100).error, 'too_many_recent_refunds');
+  });
+
+  test("doesn't reveal the thresholds behind the signals: no counts, ages or amounts, only flags", () => {
+    const result = tools.getRiskSignals({ ...kabir, order_id: 'ORD-5018' });
+    assert.ok(Object.values(result.signals).every((v) => typeof v === 'boolean'));
+    const { order_id, ...rest } = result; // the order ID is the only number allowed
+    assert.equal(order_id, 'ORD-5018');
+    assert.doesNotMatch(JSON.stringify(rest), /\d|threshold|limit/i);
+  });
+
+  test('verifies identity and ownership like every other tool', () => {
+    assert.equal(tools.getRiskSignals({ ...kabir, card_last4: '0000', order_id: 'ORD-5018' }).error, 'identity_not_verified');
+    assert.equal(tools.getRiskSignals({ ...priya, order_id: 'ORD-5018' }).error, 'order_not_found');
+  });
+});
+
 describe('initiateRefund', () => {
   test('completes a refund within the limit and sends it back to the original card', () => {
     const result = refund(priya, 'ORD-5001', 3_499);
@@ -173,12 +229,13 @@ describe('initiateRefund', () => {
 
   test('a retry with the same idempotency key returns the original refund instead of refunding twice', () => {
     const args = { ...priya, order_id: 'ORD-5001', amount: 1_000, reason: 'damaged', idempotency_key: 'retry-me' };
+    const before = count('refunds');
     const first = tools.initiateRefund(args);
     const second = tools.initiateRefund(args);
     assert.equal(first.replayed, false);
     assert.equal(second.replayed, true);
     assert.equal(second.refund.id, first.refund.id);
-    assert.equal(count('refunds'), 4);
+    assert.equal(count('refunds'), before + 1);
   });
 
   test('rejects an idempotency key reused for a different request, including another customer\'s', () => {
@@ -207,12 +264,14 @@ describe('initiateRefund', () => {
       [vikram, 'ORD-5013', 1_000, 'payment_disputed'],
       [{ ...priya, card_last4: '0000' }, 'ORD-5001', 1_000, 'identity_not_verified'],
       [priya, 'ORD-5004', 1_000, 'order_not_found'],
+      [kabir, 'ORD-5018', 1_000, 'too_many_recent_refunds'],
     ];
+    const before = { refunds: count('refunds'), escalations: count('escalations') };
     for (const [who, orderId, amount, code] of cases) {
       assert.equal(refund(who, orderId, amount).error, code, orderId);
     }
-    assert.equal(count('refunds'), 3);
-    assert.equal(count('escalations'), 1);
+    assert.equal(count('refunds'), before.refunds);
+    assert.equal(count('escalations'), before.escalations);
   });
 
   test('the refund window includes day 30 and ends right after it', () => {

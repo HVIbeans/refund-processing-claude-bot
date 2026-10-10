@@ -41,7 +41,7 @@ Tick items off as you go (`- [x]`).
 
 ## Phase 5 — Agent SDK & multi-agent
 - [x] 25. Rebuild on the **Claude Agent SDK** (it can use the same MCP server): `sdkChat.js`, `ANTHROPIC_LOOP=sdk`
-- [ ] 26. Multi-agent: triage → refund specialist → fraud checker, with an orchestrator
+- [x] 26. Multi-agent: triage → refund specialist → fraud checker, with an orchestrator: `multiAgent.js` on the plain Messages API ("agents as tools"), `ANTHROPIC_LOOP=multi`, with fraud signals in `tools.js`
 - [ ] 27. (Optional) Try Managed Agents and compare to self-hosting
 
 ## Phase 6 — Evaluation (start around step 17)
