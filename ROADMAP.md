@@ -42,18 +42,27 @@ Tick items off as you go (`- [x]`).
 ## Phase 5 — Agent SDK & multi-agent
 - [x] 25. Rebuild on the **Claude Agent SDK** (it can use the same MCP server): `sdkChat.js`, `ANTHROPIC_LOOP=sdk`
 - [x] 26. Multi-agent: triage → refund specialist → fraud checker, with an orchestrator: `multiAgent.js` on the plain Messages API ("agents as tools"), `ANTHROPIC_LOOP=multi`, with fraud signals in `tools.js`
-- [ ] 27. (Optional) Try Managed Agents and compare to self-hosting
+- [-] 27. (Optional) Try Managed Agents and compare to self-hosting — *skipped for now.* Notes for later: it reaches MCP servers only by public URL, so the plan was to declare our tools as `custom` tools and answer `agent.custom_tool_use` events through our own MCP client (no `agent_toolset`, so no sandbox tools). First check whether the API gateway forwards `/v1/agents` and `/v1/sessions`.
 
-## Phase 6 — Evaluation (start around step 17)
-- [ ] 28. Eval set of 30–50 scenarios with expected outcomes (approve / deny / partial / escalate)
-- [ ] 29. LLM-as-judge for tone and policy compliance
-- [ ] 30. Run evals via the **Batch API**
-- [ ] 31. Compare models (Haiku vs Sonnet vs Opus) on accuracy, latency, cost
+## Phase 6 — Evaluation (start around step 17) — *skipped for now; come back to it after Phase 7*
+- [-] 28. Eval set of 30–50 scenarios with expected outcomes (approve / deny / partial / escalate)
+- [-] 29. LLM-as-judge for tone and policy compliance
+- [-] 30. Run evals via the **Batch API**
+- [-] 31. Compare models (Haiku vs Sonnet vs Opus) on accuracy, latency, cost
 
 ## Phase 7 — Interface & extras
 - [ ] 32. Barebones chat UI: a small Node HTTP backend + a static HTML chat page
 - [ ] 33. **Files API / vision**: receipt or damaged-item photo verification
 - [ ] 34. **Citations**: quote the exact policy clause behind each decision
+
+## Phase 8 — Deployment (from one local server to serving real customer traffic)
+- [ ] 35. Conversation store: load and save each conversation's history by ID (Redis or a DB table) instead of keeping it in process memory, so restarts and multiple app instances work
+- [ ] 36. MCP server as its own service over Streamable HTTP on the internal network (or one shared stdio server per app process); the `--reviewer` tools as a separate staff-only service
+- [ ] 37. Move from SQLite to a database server (e.g. Postgres) for multiple app instances; keep the checks-under-the-write-lock pattern from step 18 using its transactions or row locks
+- [ ] 38. Real customer identity: a logged-in customer's verified ID passed to the tools, instead of email + card last 4 typed in the chat
+- [ ] 39. Public-traffic protections: rate limits per customer and IP, a cap on cost and length per turn, timeouts with a clear "try again", and the API key only on the server
+- [ ] 40. A staff-only review tool for `list_escalations` / `resolve_refund_approval` (the role Claude Code plays today)
+- [ ] 41. Pick the production backend: the manual loop (`chat.js`) fits best; note the costs of multi-agent (about 2× API calls), the Agent SDK (a process per conversation) and Managed Agents (hosted loop, session fees)
 
 ## Domain features to include
 - [ ] Identity verification before revealing data or taking action
