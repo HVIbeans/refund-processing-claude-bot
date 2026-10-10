@@ -98,6 +98,18 @@ describe('getPayment', () => {
     assert.equal(result.refund_eligibility.refundable_amount, 5_000);
   });
 
+  // The model sees every tool result, so a limit in one could be quoted to a customer, whatever
+  // the system prompt says. initiateRefund enforces the limit without ever showing it.
+  test("doesn't reveal the internal approval limit, eligible or not", () => {
+    const leaks = (result) => 'auto_approve_limit' in result || /5,?000/.test(JSON.stringify(result));
+    const eligible = tools.getPayment({ ...priya, order_id: 'ORD-5002' }).refund_eligibility;
+    assert.equal(eligible.eligible, true);
+    assert.equal(leaks(eligible), false);
+    const refused = tools.initiateRefund({ ...priya, order_id: 'ORD-5003', amount: 500, reason: 'damaged', idempotency_key: 'old' });
+    assert.equal(refused.error, 'outside_refund_window');
+    assert.equal(leaks(refused), false);
+  });
+
   test('counts a refund waiting for approval against what is left', () => {
     const { refund_eligibility } = tools.getPayment({ ...anita, order_id: 'ORD-5014' });
     assert.equal(refund_eligibility.refundable_amount, 2_000);
@@ -399,6 +411,36 @@ describe('concurrent writes', () => {
     assert.equal(competing.error, 'try_again');
     assert.equal(approved.refund.status, 'completed');
     assert.equal(toolsA.resolveRefundApproval({ escalation_id: 'ESC-401', decision: 'reject' }).error, 'already_resolved');
+  });
+
+  test('two concurrent escalations of the same case create one, not a duplicate or a crash', () => {
+    const toolsA = createTools(dbA, { now: () => today });
+    const escalation = { type: 'account', summary: 'Wants to close the account', ...priya };
+    let competing;
+    const racingTools = interleaved(() => {
+      competing = toolsA.escalateToHuman(escalation);
+    });
+
+    const first = racingTools.escalateToHuman(escalation);
+    assert.equal(competing.error, 'try_again');
+    assert.equal(first.already_open, false);
+    const retried = toolsA.escalateToHuman(escalation);
+    assert.equal(retried.already_open, true);
+    assert.equal(retried.escalation.id, first.escalation.id);
+  });
+
+  test('two concurrent logDecision calls get distinct IDs instead of a crash', () => {
+    const toolsA = createTools(dbA, { now: () => today });
+    const decision = { decision: 'none', amount: 0, reason: 'just chatting', needs_human: false };
+    let competing;
+    const racingTools = interleaved(() => {
+      competing = toolsA.logDecision(decision);
+    });
+
+    const first = racingTools.logDecision(decision);
+    assert.equal(competing.error, 'try_again');
+    assert.equal(first.ok, true);
+    assert.notEqual(toolsA.logDecision(decision).id, first.id);
   });
 });
 

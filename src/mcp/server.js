@@ -10,8 +10,8 @@ import pkg from '../../package.json' with { type: 'json' };
 const instructions = `Tools for handling customer refund requests. All amounts are whole rupees (INR).
 - Verify the customer first with get_customer (email + last 4 digits of a card on file). Every tool except escalate_to_human needs both; if the customer can't be verified, escalate as "account" with their email.
 - Use get_payment to check refund eligibility before calling initiate_refund.
-- A result with isError: true has an "error" code and a "message". Act on the message; don't retry the same call.
-- If initiate_refund fails mid-call, retry with the SAME idempotency_key so the customer isn't refunded twice.
+- A result with isError: true has an "error" code and a "message". Act on the message; don't retry the same call, unless the error is "try_again".
+- If initiate_refund fails mid-call or returns "try_again", retry with the SAME idempotency_key so the customer isn't refunded twice.
 - Don't disclose internal reasons such as account review or risk flags to the customer.`;
 
 const identity = {

@@ -177,7 +177,8 @@ export function createTools(db, { now = () => new Date() } = {}) {
       refundable_display: formatInr(refundable),
       already_refunded_or_pending: committed,
       days_since_delivery: elapsed == null ? null : Math.floor(elapsed / DAY_MS),
-      auto_approve_limit: POLICY.autoApproveLimit[customer.tier],
+      // No approval limit here: the model sees these facts and could quote it to a customer.
+      // initiateRefund applies the limit itself.
     };
 
     let blocker = null;
@@ -389,27 +390,31 @@ export function createTools(db, { now = () => new Date() } = {}) {
       return fail('invalid_email', 'A valid email address is required so a human can follow up.');
     }
 
-    const customer = verify(email, card_last4);
-    let orderId = null;
-    if (customer && order_id != null) {
-      const order = ownedOrder(order_id, customer.id);
-      if (!order) return orderNotFound();
-      orderId = order.id;
-    }
-    // Unverified: order_id is ignored, since linking it would confirm the order exists. Mention it in the summary instead.
-    const customerId = customer?.id ?? null;
-    const contact = customer ? null : contactEmail;
-    const message = 'A member of our team will follow up by email.';
+    // The duplicate check and the ID run under the write lock with the insert, so two processes
+    // can't both find no open escalation and both insert one (or the same ESC- id).
+    return inTransaction(() => {
+      const customer = verify(email, card_last4);
+      let orderId = null;
+      if (customer && order_id != null) {
+        const order = ownedOrder(order_id, customer.id);
+        if (!order) return orderNotFound();
+        orderId = order.id;
+      }
+      // Unverified: order_id is ignored, since linking it would confirm the order exists. Mention it in the summary instead.
+      const customerId = customer?.id ?? null;
+      const contact = customer ? null : contactEmail;
+      const message = 'A member of our team will follow up by email.';
 
-    const open = findOpenEscalation.get(type, customerId, contact, orderId);
-    if (open) {
-      return { ok: true, already_open: true, verified: Boolean(customer), escalation: { ...open }, message };
-    }
+      const open = findOpenEscalation.get(type, customerId, contact, orderId);
+      if (open) {
+        return { ok: true, already_open: true, verified: Boolean(customer), escalation: { ...open }, message };
+      }
 
-    const id = nextId('escalations', 'ESC-', 401);
-    const at = now().toISOString();
-    insertEscalation.run(id, type, customerId, contact, orderId, null, summary.trim(), at);
-    return { ok: true, already_open: false, verified: Boolean(customer), escalation: { id, type, status: 'open', created_at: at }, message };
+      const id = nextId('escalations', 'ESC-', 401);
+      const at = now().toISOString();
+      insertEscalation.run(id, type, customerId, contact, orderId, null, summary.trim(), at);
+      return { ok: true, already_open: false, verified: Boolean(customer), escalation: { id, type, status: 'open', created_at: at }, message };
+    }, 'Another request is being handled right now. Try the escalation again in a moment.');
   }
 
   // For a human reviewer, not the customer-facing agent: lists escalations of every type
@@ -497,10 +502,13 @@ export function createTools(db, { now = () => new Date() } = {}) {
       return fail('invalid_needs_human', 'needs_human must be true or false.');
     }
 
-    const id = nextId('decision_log', 'DEC-', 1);
-    const at = now().toISOString();
-    insertDecisionLog.run(id, at, decision, amount, reason.trim(), needs_human ? 1 : 0);
-    return { ok: true, id, at };
+    // Under the write lock, so two processes can't pick the same DEC- id.
+    return inTransaction(() => {
+      const id = nextId('decision_log', 'DEC-', 1);
+      const at = now().toISOString();
+      insertDecisionLog.run(id, at, decision, amount, reason.trim(), needs_human ? 1 : 0);
+      return { ok: true, id, at };
+    }, 'Another write is in progress. Log the decision again in a moment.');
   }
 
   function validateLogFilters({ since, tool_name, limit = 50 } = {}) {
