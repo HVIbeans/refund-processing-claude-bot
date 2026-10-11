@@ -1,46 +1,26 @@
 // npm run chat: talk to the refund agent in the terminal.
-// The SDK reads ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL from the environment (.env).
 import { stdin as input, stdout as output } from 'node:process';
 import readline from 'node:readline';
 import Anthropic from '@anthropic-ai/sdk';
-import { DEFAULT_MODEL, createChat } from './chat.js';
+import { createChat } from './chat.js';
 import { createToolRunnerChat } from './toolRunnerChat.js';
 import { createSdkChat } from './sdkChat.js';
 import { createMultiAgentChat } from './multiAgent.js';
-import { connectMcp, stdioTransport } from './mcpClient.js';
-import { modelSupport } from './capabilities.js';
+import { EFFORTS, NOT_FOR_AGENT_TOOLS, SetupError, setupAgent } from './setup.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { POLICY, formatInr } from '../policy.js';
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example).');
-  process.exit(1);
-}
-
-const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
-const EFFORTS = ['low', 'medium', 'high'];
-const effort = process.env.ANTHROPIC_EFFORT || 'medium';
-if (!EFFORTS.includes(effort)) {
-  console.error(`ANTHROPIC_EFFORT must be one of ${EFFORTS.join(', ')} (got "${effort}").`);
-  process.exit(1);
-}
-const client = new Anthropic();
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 
-// Start the MCP server as a child process and list its tools. The agent reaches data only through them.
-// If it dies mid-conversation, callTool transparently respawns it (stdioTransport passed again) and
-// retries the in-flight call once - see mcpClient.js.
-let mcp;
+// The client, model capabilities, MCP connection and agent tools (shared with the web chat).
+let agent;
 try {
-  mcp = await connectMcp(stdioTransport(), { reconnect: stdioTransport });
+  agent = await setupAgent();
 } catch (err) {
-  console.error(`Could not start the refund-tools MCP server: ${err.message}`);
+  console.error(err instanceof SetupError ? err.message : `Could not start: ${err.message}`);
   process.exit(1);
 }
-
-// Only ask for thinking and effort if the model accepts them; otherwise every request would 400.
-const support = await modelSupport(client, model);
-const supportsEffort = (level) => support.effortLevels.includes(level);
+const { client, model, effort, support, supportsEffort, mcp, agentTools } = agent;
 
 // Only controls what's printed: hidden thinking is still generated, kept in the history and billed.
 let showThinking = true;
@@ -60,12 +40,8 @@ if (!loop) {
   process.exit(1);
 }
 
-// log_decision is harness-only: called directly below, never by the model (whether a decision
-// gets logged isn't the model's call). The reviewer tools (resolve_refund_approval and the like)
-// aren't here because the agent's server doesn't have them: stdioTransport() starts it without
-// --reviewer. chat.js also refuses any tool_use for a tool not in agentTools.
-const NOT_FOR_AGENT_TOOLS = new Set(['log_decision']);
-const agentTools = mcp.tools.filter((t) => !NOT_FOR_AGENT_TOOLS.has(t.name));
+// agentTools leaves out log_decision (called directly below, never by the model), and chat.js
+// refuses any tool_use for a tool not in it. See setup.js.
 
 // The server's instructions go into the system prompt, as MCP clients usually do.
 // The Agent SDK adds them itself (as a system reminder), so it gets the prompt without them.
@@ -73,7 +49,7 @@ const system = buildSystemPrompt(POLICY, { toolInstructions: loop === LOOPS.sdk 
 const chat = loop.create({
   client, model, system,
   thinking: support.adaptiveThinking,
-  effort: supportsEffort(effort) ? effort : undefined,
+  effort,
   decide: true, // on by default in the REPL; toggle with /decision
   cache: true, // on by default in the REPL; toggle with /cache
   tools: agentTools, callTool: mcp.callTool,
@@ -262,12 +238,8 @@ function showDecision({ decision, amount, reason, needs_human }) {
 // whether this gets logged must not be something the model decides. A logging failure must
 // never break the turn, so this only reports it quietly rather than throwing.
 async function logDecision(decision) {
-  try {
-    const { isError, text } = await mcp.callTool('log_decision', decision);
-    if (isError) console.log(dim(`  ↳ (decision logging failed: ${text})`));
-  } catch (err) {
-    console.log(dim(`  ↳ (decision logging failed: ${err.message})`));
-  }
+  const failure = await agent.logDecision(decision);
+  if (failure) console.log(dim(`  ↳ (decision logging failed: ${failure})`));
 }
 
 // Lists the tools and what their definitions would add to each request, using the token counting

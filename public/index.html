@@ -3,21 +3,168 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Refund Agent</title>
+  <title>Refund Help</title>
   <style>
-    :root { color-scheme: light dark; --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --accent: #2f6fdb; }
-    @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ececea; --muted: #9a9a94; --accent: #7aa7ff; } }
-    body { margin: 0; padding: 48px 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-    main { max-width: 640px; margin: 0 auto; }
-    p { color: var(--muted); }
-    a { color: var(--accent); }
+    :root { color-scheme: light dark; --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --accent: #2f6fdb; --bubble: #ffffff; --mine: #2f6fdb; --mine-fg: #ffffff; --border: #e2e2dd; --error: #b3261e; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ececea; --muted: #9a9a94; --accent: #7aa7ff; --bubble: #232322; --mine: #3b6fd1; --mine-fg: #ffffff; --border: #33332f; --error: #ff8a80; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 680px; height: 100dvh; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    h1 { font-size: 1.25rem; margin: 0; }
+    button { font: inherit; border-radius: 8px; border: 1px solid var(--border); background: var(--bubble); color: var(--fg); padding: 6px 12px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+    .msg { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bubble); border: 1px solid var(--border); }
+    .msg.me { align-self: flex-end; background: var(--mine); color: var(--mine-fg); border-color: transparent; }
+    .msg.status { align-self: flex-start; background: none; border: none; color: var(--muted); font-style: italic; padding: 0 4px; }
+    .msg.error { color: var(--error); }
+    form { display: flex; gap: 8px; }
+    textarea { flex: 1; font: inherit; resize: none; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bubble); color: var(--fg); }
+    form button { background: var(--accent); color: #fff; border-color: transparent; }
+    footer { color: var(--muted); font-size: 0.85rem; }
+    footer a { color: var(--accent); }
   </style>
 </head>
 <body>
   <main>
-    <h1>Refund Agent</h1>
-    <p>The chat UI will live here (roadmap step 32).</p>
-    <p><a href="/prompt-feedback">Prompt coach feedback →</a></p>
+    <header>
+      <h1>Refund help</h1>
+      <button id="new" type="button">New conversation</button>
+    </header>
+    <div id="log" aria-live="polite"></div>
+    <form id="form">
+      <textarea id="input" rows="2" placeholder="Type your message…" maxlength="2000" required></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+    <footer>A mock store for learning. <a href="/prompt-feedback">Prompt coach feedback →</a></footer>
   </main>
+
+  <script>
+    // The reply text comes from the model, so it is untrusted: it's only ever set with textContent,
+    // never parsed as HTML, so markup in a reply shows as text instead of running in the page.
+    const log = document.getElementById('log');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const sendButton = document.getElementById('send');
+    // The server's ID for this conversation, set by the first `start` event. Kept only in memory:
+    // after a reload the page can't show the old messages, so it starts a new conversation.
+    let conversationId = null;
+
+    function bubble(kind, text = '') {
+      const el = document.createElement('div');
+      el.className = `msg ${kind}`;
+      el.textContent = text;
+      log.append(el);
+      log.scrollTop = log.scrollHeight;
+      return el;
+    }
+
+    function greet() {
+      log.replaceChildren();
+      bubble('agent', 'Hi! I can help with refunds for your orders. To start, what is your email address and the last 4 digits of a card on file?');
+    }
+
+    // Reads a text/event-stream body and calls onEvent(name, data) for each event.
+    async function readEvents(response, onEvent) {
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let end;
+        while ((end = buffer.indexOf('\n\n')) !== -1) {
+          const block = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          let name = 'message';
+          let data = '';
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event: ')) name = line.slice(7);
+            else if (line.startsWith('data: ')) data += line.slice(6);
+          }
+          if (data) onEvent(name, JSON.parse(data));
+        }
+      }
+    }
+
+    async function send(message) {
+      bubble('me', message);
+      const status = bubble('status', 'Typing…');
+      let reply = null; // the agent's bubble, created on the first piece of text
+      const show = (text) => {
+        reply ??= bubble('agent');
+        status.remove();
+        reply.textContent += text;
+        log.scrollTop = log.scrollHeight;
+      };
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId, message }),
+        });
+        if (!response.ok) {
+          const { error } = await response.json().catch(() => ({}));
+          throw new Error(error || `The chat answered ${response.status}.`);
+        }
+        await readEvents(response, (name, data) => {
+          if (name === 'start') conversationId = data.conversationId;
+          else if (name === 'text') show(data.text);
+          else if (name === 'working') {
+            if (!status.isConnected) log.append(status);
+            status.textContent = 'Checking…';
+          } else if (name === 'discard') {
+            // A reply that was withdrawn mustn't stay on screen as if it stood.
+            reply?.remove();
+            reply = null;
+          } else if (name === 'done') {
+            status.remove();
+            // A fallback reply was never streamed; an empty bubble means nothing was shown yet.
+            if (data.fallback || !reply) {
+              reply ??= bubble('agent');
+              reply.textContent = data.text;
+            }
+          } else if (name === 'error') {
+            status.remove();
+            bubble('agent error', data.message);
+          }
+        });
+      } catch (err) {
+        status.remove();
+        bubble('agent error', err.message);
+      } finally {
+        status.remove();
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = '';
+      input.disabled = sendButton.disabled = true;
+      await send(message);
+      input.disabled = sendButton.disabled = false;
+      input.focus();
+    });
+
+    // Enter sends; Shift+Enter makes a new line.
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    document.getElementById('new').addEventListener('click', () => {
+      conversationId = null;
+      greet();
+      input.focus();
+    });
+
+    greet();
+  </script>
 </body>
 </html>
