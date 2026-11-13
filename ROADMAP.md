@@ -63,7 +63,7 @@ Tick items off as you go (`- [x]`).
 - [ ] 39. Public-traffic protections: rate limits per customer and IP, a cap on cost and length per turn, timeouts with a clear "try again", and the API key only on the server
 - [ ] 40. A staff-only review tool for `list_escalations` / `resolve_refund_approval` (the role Claude Code plays today)
 - [ ] 41. Pick the production backend: the manual loop (`chat.js`) fits best; note the costs of multi-agent, the Agent SDK (a process per conversation) and Managed Agents (hosted loop, session fees)
-  - Benchmark (`npm run bench`, 2026-11-13, `claude-sonnet-4-6` via the gateway, 5 scenarios, 1 run each, so treat small gaps as noise). All three loops reached the expected outcome 5/5.
+  - Benchmark (`npm run bench`, 2026-11-13, `claude-sonnet-4-6` via the gateway, effort `low`, 5 scenarios, 1 run each, so treat small gaps as noise). All three loops reached the expected outcome 5/5.
 
     | | manual | sdk | multi |
     |---|---|---|---|
