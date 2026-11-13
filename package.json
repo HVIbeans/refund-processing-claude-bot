@@ -14,7 +14,8 @@
     "db:reset": "node src/db/reset.js",
     "mcp": "node src/mcp/stdio.js",
     "mcp:inspect": "npx @modelcontextprotocol/inspector node src/mcp/stdio.js --reviewer",
-    "chat": "node --env-file-if-exists=.env src/agent/repl.js"
+    "chat": "node --env-file-if-exists=.env src/agent/repl.js",
+    "bench": "node --env-file-if-exists=.env scripts/bench.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.296",

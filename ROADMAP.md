@@ -62,7 +62,21 @@ Tick items off as you go (`- [x]`).
 - [ ] 38. Real customer identity: a logged-in customer's verified ID passed to the tools, instead of email + card last 4 typed in the chat
 - [ ] 39. Public-traffic protections: rate limits per customer and IP, a cap on cost and length per turn, timeouts with a clear "try again", and the API key only on the server
 - [ ] 40. A staff-only review tool for `list_escalations` / `resolve_refund_approval` (the role Claude Code plays today)
-- [ ] 41. Pick the production backend: the manual loop (`chat.js`) fits best; note the costs of multi-agent (about 2× API calls), the Agent SDK (a process per conversation) and Managed Agents (hosted loop, session fees)
+- [ ] 41. Pick the production backend: the manual loop (`chat.js`) fits best; note the costs of multi-agent, the Agent SDK (a process per conversation) and Managed Agents (hosted loop, session fees)
+  - Benchmark (`npm run bench`, 2026-11-13, `claude-sonnet-4-6` via the gateway, 5 scenarios, 1 run each, so treat small gaps as noise). All three loops reached the expected outcome 5/5.
+
+    | | manual | sdk | multi |
+    |---|---|---|---|
+    | Total latency | 70 s | 93 s (1.3×) | 257 s (3.7×) |
+    | Refund turn | 13–18 s | 17–21 s | 51–75 s |
+    | API calls | 18 | 23 | 48 (2.7×) |
+    | Output tokens | 3.2k | 3.2k | 9.9k (3.1×) |
+    | Approx. cost | ~$0.119 | ~$0.110 | ~$0.317 (2.7×) |
+
+    Costs are at $3 / $15 per million input / output tokens (cache write 1.25×, cache read 0.1×). At those rates the sdk tokens match the SDK's own `costUsd` exactly.
+  - **manual vs sdk:** about the same cost. The SDK also caches the conversation history (about 30 uncached input tokens in total), which makes up for the ~23% extra input its own prompt text adds. That points to history caching as the one clear improvement for `chat.js`. The SDK is ~4–5 s slower per turn, mostly from starting the Claude Code process: time to first token is 5–8 s on a new conversation, 2.1 s once it's running, and ~2 s for manual.
+  - **multi:** 10–11 API calls per refund (manual: 4), and a refund turn takes about a minute, which is too slow for a live chat. Part of it is repeated work: triage always calls `get_order`, and both the fraud checker and the refund specialist call `get_payment`. Briefs and tool results passed between agents aren't cached. Its code-enforced fraud gate didn't change any outcome here, because the hard frequency blocker in `tools.js` already catches Kabir in every loop. Making soft-signal review a blocker in `assess()` would cover all loops at no extra cost.
+  - Next: rerun with `--runs 3` before relying on the manual-vs-sdk difference.
 
 ## Domain features to include
 - [ ] Identity verification before revealing data or taking action
